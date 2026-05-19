@@ -1,5 +1,5 @@
 // Modal: Receive chats and characters from another LAN device
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Download, Eye, Loader2, TriangleAlert, Wifi } from "lucide-react";
 import { toast } from "sonner";
 import type { LanTransferImportSummary, LanTransferPreviewResponse } from "@marinara-engine/shared";
@@ -38,6 +38,8 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
   const [previewedPayload, setPreviewedPayload] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const currentTrimmedPayloadRef = useRef("");
+  const previewRequestIdRef = useRef(0);
 
   const trimmedPayload = transferPayload.trim();
   const isBusy = previewTransfer.isPending || importTransfer.isPending;
@@ -63,6 +65,8 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
 
   const handlePayloadChange = useCallback(
     (value: string) => {
+      currentTrimmedPayloadRef.current = value.trim();
+      previewRequestIdRef.current += 1;
       setTransferPayload(value);
       setLocalError(null);
       setStatusMessage(null);
@@ -85,16 +89,23 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
       return;
     }
 
+    const requestId = previewRequestIdRef.current + 1;
+    previewRequestIdRef.current = requestId;
+    currentTrimmedPayloadRef.current = payload;
     setLocalError(null);
     setStatusMessage(null);
     importTransfer.reset();
 
     try {
       const nextPreview = await previewTransfer.mutateAsync({ transferPayload: payload });
+      if (previewRequestIdRef.current !== requestId || currentTrimmedPayloadRef.current !== payload) return;
+
       setPreview(nextPreview);
       setPreviewedPayload(payload);
       setStatusMessage(`Preview ready: ${nextPreview.manifest.items.length} item${nextPreview.manifest.items.length === 1 ? "" : "s"}.`);
     } catch {
+      if (previewRequestIdRef.current !== requestId || currentTrimmedPayloadRef.current !== payload) return;
+
       setPreview(null);
       setPreviewedPayload(null);
       setStatusMessage(null);
