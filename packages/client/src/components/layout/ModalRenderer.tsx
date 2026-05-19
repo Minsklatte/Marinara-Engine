@@ -2,6 +2,7 @@
 // ModalRenderer: Maps store modal types → components
 // ──────────────────────────────────────────────
 import { lazy, Suspense } from "react";
+import type { LanTransferItemRequest } from "@marinara-engine/shared";
 import { useUIStore } from "../../stores/ui.store";
 import type { AgentData } from "../modals/EditAgentModal";
 
@@ -49,6 +50,9 @@ const CreatePersonaModal = lazy(() =>
 );
 const CharacterCardUpdateModal = lazy(() =>
   import("../modals/CharacterCardUpdateModal").then((module) => ({ default: module.CharacterCardUpdateModal })),
+);
+const SendToDeviceModal = lazy(() =>
+  import("../modals/SendToDeviceModal").then((module) => ({ default: module.SendToDeviceModal })),
 );
 
 export function ModalRenderer() {
@@ -104,6 +108,16 @@ export function ModalRenderer() {
       break;
     case "character-card-update":
       content = <CharacterCardUpdateModal open onClose={closeModal} />;
+      break;
+    case "send-to-device":
+      content = (
+        <SendToDeviceModal
+          open
+          onClose={closeModal}
+          items={(modal?.props?.items as LanTransferItemRequest[] | undefined) ?? []}
+          title={typeof modal?.props?.title === "string" ? modal.props.title : undefined}
+        />
+      );
       break;
     default:
       content = null;
