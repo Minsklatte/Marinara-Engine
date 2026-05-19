@@ -118,6 +118,8 @@ export function SendToDeviceModal({ open, onClose, items, title = "Send to Devic
     return () => {
       if (activeCreateRequestIdRef.current === requestId) {
         activeCreateRequestIdRef.current += 1;
+        if (createdKeyRef.current === itemKey) createdKeyRef.current = null;
+        if (latestItemKeyRef.current === itemKey) latestItemKeyRef.current = null;
       }
     };
   }, [cancelOfferById, createOfferAsync, hasItems, itemKey, items, open, resetCancelOffer, resetCreateOffer]);
