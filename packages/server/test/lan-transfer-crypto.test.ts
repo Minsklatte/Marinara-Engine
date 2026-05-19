@@ -22,7 +22,8 @@ test("encrypts and decrypts a transfer package", () => {
 test("tampered ciphertext fails authentication", () => {
   const secret = generateLanTransferSecret();
   const encrypted = encryptLanTransferPackage(JSON.stringify({ version: 1 }), secret);
-  const tampered = { ...encrypted, ciphertext: encrypted.ciphertext.replace(/.$/, "A") };
+  const replacement = encrypted.ciphertext.endsWith("A") ? "B" : "A";
+  const tampered = { ...encrypted, ciphertext: encrypted.ciphertext.slice(0, -1) + replacement };
 
   assert.throws(() => decryptLanTransferPackage(tampered, secret));
 });
