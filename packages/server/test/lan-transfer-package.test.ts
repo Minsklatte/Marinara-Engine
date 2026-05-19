@@ -50,6 +50,8 @@ test("rejects unknown item types", () => {
 });
 
 test("rejects oversized packages", () => {
+  const content = "oversized";
+  const bytes = Buffer.byteLength(content, "utf8");
   const result = validateLanTransferPackage(
     {
       version: 1,
@@ -59,12 +61,12 @@ test("rejects oversized packages", () => {
         expiresAt: FUTURE_EXPIRES_AT,
         sourceApp: "Marinara Engine",
         sourceVersion: "1.6.0",
-        items: [],
-        totalBytes: 10,
+        items: [{ type: "chat", id: "chat-1", name: "Chat", format: "jsonl", messageCount: 1, bytes }],
+        totalBytes: bytes,
       },
-      items: [],
+      items: [{ type: "chat", id: "chat-1", name: "Chat", format: "jsonl", content }],
     },
-    { maxBytes: 1, now: () => NOW },
+    { maxBytes: bytes - 1, now: () => Date.parse("2026-05-19T00:05:00.000Z") },
   );
 
   assert.equal(result.ok, false);
