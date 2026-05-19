@@ -54,6 +54,9 @@ const CharacterCardUpdateModal = lazy(() =>
 const SendToDeviceModal = lazy(() =>
   import("../modals/SendToDeviceModal").then((module) => ({ default: module.SendToDeviceModal })),
 );
+const ReceiveFromDeviceModal = lazy(() =>
+  import("../modals/ReceiveFromDeviceModal").then((module) => ({ default: module.ReceiveFromDeviceModal })),
+);
 
 function getLanTransferItems(value: unknown): LanTransferItemRequest[] {
   if (!Array.isArray(value)) return [];
@@ -146,6 +149,9 @@ export function ModalRenderer() {
           title={typeof modal?.props?.title === "string" ? modal.props.title : undefined}
         />
       );
+      break;
+    case "receive-from-device":
+      content = <ReceiveFromDeviceModal open onClose={closeModal} />;
       break;
     default:
       content = null;
