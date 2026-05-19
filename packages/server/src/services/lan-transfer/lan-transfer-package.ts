@@ -22,6 +22,7 @@ type ValidationResult =
 
 interface ValidationOptions {
   maxBytes?: number;
+  now?: () => number;
 }
 
 export async function buildLanTransferPackage(
@@ -116,6 +117,7 @@ export async function buildLanTransferPackage(
 
 export function validateLanTransferPackage(value: unknown, options: ValidationOptions = {}): ValidationResult {
   const maxBytes = options.maxBytes ?? LAN_TRANSFER_PACKAGE_MAX_BYTES;
+  const now = options.now?.() ?? Date.now();
   if (!isRecord(value)) return { ok: false, error: "Package must be an object" };
   if (value.version !== 1) return { ok: false, error: "Unsupported package version" };
   if (!isRecord(value.manifest)) return { ok: false, error: "Package manifest must be an object" };
@@ -124,14 +126,15 @@ export function validateLanTransferPackage(value: unknown, options: ValidationOp
   const manifest = value.manifest;
   if (manifest.version !== 1) return { ok: false, error: "Unsupported manifest version" };
   if (manifest.sourceApp !== "Marinara Engine") return { ok: false, error: "Unsupported source app" };
-  if (typeof manifest.createdAt !== "string") return { ok: false, error: "Manifest createdAt must be a string" };
-  if (typeof manifest.expiresAt !== "string") return { ok: false, error: "Manifest expiresAt must be a string" };
+  if (!isUsableTimestamp(manifest.createdAt)) return { ok: false, error: "Manifest createdAt must be a valid timestamp" };
+  if (!isUsableTimestamp(manifest.expiresAt)) return { ok: false, error: "Manifest expiresAt must be a valid timestamp" };
+  if (Date.parse(manifest.expiresAt) <= now) return { ok: false, error: "Package has expired" };
   if (typeof manifest.sourceVersion !== "string") return { ok: false, error: "Manifest sourceVersion must be a string" };
   if (!Array.isArray(manifest.items)) return { ok: false, error: "Manifest items must be an array" };
   if (typeof manifest.totalBytes !== "number" || !Number.isFinite(manifest.totalBytes) || manifest.totalBytes < 0) {
     return { ok: false, error: "Manifest totalBytes must be finite" };
   }
-  if (manifest.totalBytes > maxBytes) return { ok: false, error: "Package exceeds maximum size" };
+  if (manifest.items.length !== value.items.length) return { ok: false, error: "Manifest item count mismatch" };
 
   for (const item of manifest.items) {
     const result = validateManifestItem(item);
@@ -142,6 +145,24 @@ export function validateLanTransferPackage(value: unknown, options: ValidationOp
     const result = validatePackageItem(item);
     if (!result.ok) return result;
   }
+
+  let totalBytes = 0;
+  for (let i = 0; i < value.items.length; i++) {
+    const manifestItem = manifest.items[i];
+    const packageItem = value.items[i];
+    const matchResult = validateManifestItemMatchesPackageItem(manifestItem, packageItem);
+    if (!matchResult.ok) return matchResult;
+
+    const bytes = getPackageItemBytes(packageItem);
+    if (bytes === null) return { ok: false, error: "Package item bytes could not be computed" };
+    if ((manifestItem as Record<string, unknown>).bytes !== bytes) {
+      return { ok: false, error: "Manifest item bytes mismatch" };
+    }
+    totalBytes += bytes;
+  }
+
+  if (manifest.totalBytes !== totalBytes) return { ok: false, error: "Manifest totalBytes mismatch" };
+  if (manifest.totalBytes > maxBytes) return { ok: false, error: "Package exceeds maximum size" };
 
   return { ok: true, package: value as unknown as LanTransferPackage };
 }
@@ -211,16 +232,25 @@ function readName(data: unknown, fallback: string): string {
 
 function validateManifestItem(item: unknown): { ok: true } | { ok: false; error: string } {
   if (!isRecord(item)) return { ok: false, error: "Manifest item must be an object" };
-  if (typeof item.id !== "string") return { ok: false, error: "Manifest item id must be a string" };
-  if (typeof item.name !== "string") return { ok: false, error: "Manifest item name must be a string" };
+  if (typeof item.id !== "string" || !item.id.trim()) {
+    return { ok: false, error: "Manifest item id must be a non-empty string" };
+  }
+  if (typeof item.name !== "string" || !item.name.trim()) {
+    return { ok: false, error: "Manifest item name must be a non-empty string" };
+  }
   if (typeof item.bytes !== "number" || !Number.isFinite(item.bytes) || item.bytes < 0) {
     return { ok: false, error: "Manifest item bytes must be finite" };
   }
 
   if (item.type === "chat") {
     if (item.format !== "jsonl") return { ok: false, error: "Chat manifest item must use jsonl format" };
-    if (typeof item.messageCount !== "number" || !Number.isFinite(item.messageCount) || item.messageCount < 0) {
-      return { ok: false, error: "Chat manifest item messageCount must be finite" };
+    if (
+      typeof item.messageCount !== "number" ||
+      !Number.isFinite(item.messageCount) ||
+      item.messageCount < 0 ||
+      !Number.isInteger(item.messageCount)
+    ) {
+      return { ok: false, error: "Chat manifest item messageCount must be a non-negative integer" };
     }
     return { ok: true };
   }
@@ -235,8 +265,12 @@ function validateManifestItem(item: unknown): { ok: true } | { ok: false; error:
 
 function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: string } {
   if (!isRecord(item)) return { ok: false, error: "Package item must be an object" };
-  if (typeof item.id !== "string") return { ok: false, error: "Package item id must be a string" };
-  if (typeof item.name !== "string") return { ok: false, error: "Package item name must be a string" };
+  if (typeof item.id !== "string" || !item.id.trim()) {
+    return { ok: false, error: "Package item id must be a non-empty string" };
+  }
+  if (typeof item.name !== "string" || !item.name.trim()) {
+    return { ok: false, error: "Package item name must be a non-empty string" };
+  }
 
   if (item.type === "chat") {
     if (item.format !== "jsonl") return { ok: false, error: "Chat package item must use jsonl format" };
@@ -246,11 +280,62 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
 
   if (item.type === "character") {
     if (item.format !== "native") return { ok: false, error: "Character package item must use native format" };
-    if (!isRecord(item.envelope)) return { ok: false, error: "Character package item envelope must be an object" };
+    if (!isNativeCharacterEnvelope(item.envelope)) {
+      return { ok: false, error: "Character package item envelope must be a native character envelope" };
+    }
     return { ok: true };
   }
 
   return { ok: false, error: "Unsupported package item type" };
+}
+
+function isUsableTimestamp(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+
+function getPackageItemBytes(item: unknown): number | null {
+  if (!isRecord(item)) return null;
+  if (item.type === "chat" && typeof item.content === "string") {
+    return Buffer.byteLength(item.content, "utf8");
+  }
+  if (item.type === "character" && isRecord(item.envelope)) {
+    try {
+      const serialized = JSON.stringify(item.envelope);
+      return typeof serialized === "string" ? Buffer.byteLength(serialized, "utf8") : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function validateManifestItemMatchesPackageItem(
+  manifestItem: unknown,
+  packageItem: unknown,
+): { ok: true } | { ok: false; error: string } {
+  if (!isRecord(manifestItem) || !isRecord(packageItem)) {
+    return { ok: false, error: "Package item mismatch" };
+  }
+
+  if (
+    manifestItem.type !== packageItem.type ||
+    manifestItem.id !== packageItem.id ||
+    manifestItem.name !== packageItem.name ||
+    manifestItem.format !== packageItem.format
+  ) {
+    return { ok: false, error: "Manifest item does not match package item" };
+  }
+
+  return { ok: true };
+}
+
+function isNativeCharacterEnvelope(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    value.type === "marinara_character" &&
+    value.version === 1 &&
+    isRecord(value.data)
+  );
 }
 
 function readImportError(value: unknown): string {
