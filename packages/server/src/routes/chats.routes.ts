@@ -67,6 +67,12 @@ import {
 } from "../services/memory-recall-embedding.js";
 import { applyRegexScriptsToPromptMessages } from "../services/regex/regex-application.js";
 import { sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
+import {
+  normalizeChatExportFormat,
+  safeChatExportNamePart,
+  serializeChatTranscript,
+  type ChatExportFormat,
+} from "../services/export/chat-export.service.js";
 
 type TrackerWrapFormat = "xml" | "markdown" | "none";
 type EntryStateOverrides = Record<string, { ephemeral?: number | null; enabled?: boolean }>;
@@ -1908,124 +1914,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // ── Export ──
 
-  type ExportFormat = "jsonl" | "text";
   type ChatRow = NonNullable<Awaited<ReturnType<typeof storage.getById>>>;
-
-  const normalizeExportFormat = (value: unknown): ExportFormat =>
-    typeof value === "string" && value.toLowerCase() === "text" ? "text" : "jsonl";
-
-  const parseExportCharacterIds = (raw: unknown): string[] => {
-    if (Array.isArray(raw)) return raw.filter((id): id is string => typeof id === "string");
-    if (typeof raw !== "string") return [];
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
-    } catch {
-      return [];
-    }
-  };
-
-  const parseExportMetadata = (raw: unknown): Record<string, unknown> => {
-    if (!raw) return {};
-    if (typeof raw === "object") return raw as Record<string, unknown>;
-    if (typeof raw !== "string") return {};
-    try {
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-    } catch {
-      return {};
-    }
-  };
-
-  const safeExportNamePart = (value: unknown, fallback: string): string => {
-    const source = typeof value === "string" && value.trim() ? value.trim() : fallback;
-    return (
-      source
-        .normalize("NFKD")
-        .replace(/[^\w .-]+/g, "_")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, 80) || fallback
-    );
-  };
-
-  const serializeChatTranscript = async (chat: ChatRow, format: ExportFormat) => {
-    const msgs = await storage.listMessages(chat.id);
-    const charIds = parseExportCharacterIds(chat.characterIds);
-    const metadata = parseExportMetadata(chat.metadata);
-    const branchName = typeof metadata.branchName === "string" ? metadata.branchName : "";
-
-    // Build a characterId → name map for all characters in this chat
-    const charNameMap = new Map<string, string>();
-    if (charIds.length > 0) {
-      try {
-        const rows = await app.db.select().from(characters).where(inArray(characters.id, charIds));
-        for (const row of rows) {
-          const data = JSON.parse(row.data);
-          if (data?.name) charNameMap.set(row.id, data.name);
-        }
-      } catch {
-        // fall through — use chat name as fallback
-      }
-    }
-    const primaryCharName = (charIds[0] && charNameMap.get(charIds[0])) ?? chat.name;
-
-    const getDisplayName = (msg: { role: string; characterId?: string | null }) => {
-      if (msg.role === "user") return "User";
-      if (msg.role === "system") return "System";
-      if (msg.role === "narrator") return "Narrator";
-      if (msg.characterId && charNameMap.has(msg.characterId)) return charNameMap.get(msg.characterId)!;
-      return primaryCharName;
-    };
-
-    if (format === "text") {
-      const header = `Chat: ${chat.name}\nDate: ${chat.createdAt}\n${"─".repeat(50)}\n`;
-      const body = msgs
-        .map((msg) => {
-          const name = getDisplayName(msg);
-          const ts = msg.createdAt ? new Date(msg.createdAt).toLocaleString() : "";
-          return `[${name}]${ts ? ` (${ts})` : ""}\n${msg.content}`;
-        })
-        .join("\n\n");
-
-      return {
-        content: header + body,
-        extension: "txt",
-        contentType: "text/plain; charset=utf-8",
-        messageCount: msgs.length,
-        branchName,
-      };
-    }
-
-    const lines: string[] = [
-      JSON.stringify({
-        user_name: "User",
-        character_name: primaryCharName,
-        create_date: chat.createdAt,
-        chat_metadata: {},
-      }),
-    ];
-
-    for (const msg of msgs) {
-      lines.push(
-        JSON.stringify({
-          name: getDisplayName(msg),
-          is_user: msg.role === "user",
-          is_system: msg.role === "system" || msg.role === "narrator",
-          mes: msg.content,
-          send_date: msg.createdAt,
-        }),
-      );
-    }
-
-    return {
-      content: lines.join("\n"),
-      extension: "jsonl",
-      contentType: "application/jsonl",
-      messageCount: msgs.length,
-      branchName,
-    };
-  };
 
   const buildBulkExportFilename = (
     chat: ChatRow,
@@ -2036,8 +1925,8 @@ export async function chatsRoutes(app: FastifyInstance) {
   ) => {
     const padWidth = Math.max(2, String(total).length);
     const ordinal = String(index + 1).padStart(padWidth, "0");
-    const name = safeExportNamePart(chat.name, "chat");
-    const branch = branchName ? `__${safeExportNamePart(branchName, "branch")}` : "";
+    const name = safeChatExportNamePart(chat.name, "chat");
+    const branch = branchName ? `__${safeChatExportNamePart(branchName, "branch")}` : "";
     const group = chat.groupId ? `__group-${String(chat.groupId).slice(0, 8)}` : "";
     return `${ordinal}__${name}${branch}${group}__${chat.id.slice(0, 8)}.${extension}`;
   };
@@ -2045,7 +1934,7 @@ export async function chatsRoutes(app: FastifyInstance) {
   app.post<{
     Body: { chatIds?: string[]; format?: string; scope?: "selected" | "all" };
   }>("/export/bulk", async (req, reply) => {
-    const format = normalizeExportFormat(req.body?.format);
+    const format = normalizeChatExportFormat(req.body?.format);
     const scope = req.body?.scope === "all" ? "all" : "selected";
     const uniqueIds = [...new Set((req.body?.chatIds ?? []).filter((id): id is string => typeof id === "string"))];
 
@@ -2065,7 +1954,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     for (let index = 0; index < chatsToExport.length; index++) {
       const chat = chatsToExport[index]!;
-      const serialized = await serializeChatTranscript(chat, format);
+      const serialized = await serializeChatTranscript(app, storage, chat, format);
       const file = buildBulkExportFilename(
         chat,
         index,
@@ -2118,8 +2007,8 @@ export async function chatsRoutes(app: FastifyInstance) {
     const chat = await storage.getById(req.params.id);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
-    const format = normalizeExportFormat(req.query.format);
-    const serialized = await serializeChatTranscript(chat as ChatRow, format);
+    const format: ChatExportFormat = normalizeChatExportFormat(req.query.format);
+    const serialized = await serializeChatTranscript(app, storage, chat as ChatRow, format);
 
     return reply
       .header("Content-Type", serialized.contentType)
