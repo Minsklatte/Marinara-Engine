@@ -11,6 +11,10 @@ interface ReceiveFromDeviceModalProps {
   onClose: () => void;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
@@ -30,6 +34,65 @@ function getImportSummary(summary: LanTransferImportSummary) {
   return summary.skipped.length > 0 ? `Imported ${imported}; skipped ${summary.skipped.length}.` : `Imported ${imported}.`;
 }
 
+function normalizePreviewResponse(value: unknown): LanTransferPreviewResponse | null {
+  if (!isRecord(value)) return null;
+
+  const { from, offerId, expiresAt, manifest } = value;
+  if (typeof from !== "string" || typeof offerId !== "string" || typeof expiresAt !== "string") return null;
+  if (!isRecord(manifest) || !Array.isArray(manifest.items)) return null;
+  if (
+    manifest.version !== 1 ||
+    typeof manifest.createdAt !== "string" ||
+    typeof manifest.expiresAt !== "string" ||
+    manifest.sourceApp !== "Marinara Engine" ||
+    typeof manifest.sourceVersion !== "string" ||
+    typeof manifest.totalBytes !== "number" ||
+    !Number.isFinite(manifest.totalBytes)
+  ) {
+    return null;
+  }
+
+  const items: LanTransferPreviewResponse["manifest"]["items"] = [];
+  for (const item of manifest.items) {
+    if (!isRecord(item)) return null;
+
+    const { type, id, name, format, bytes } = item;
+    if (typeof type !== "string" || typeof id !== "string" || typeof name !== "string") return null;
+    if (typeof bytes !== "number" || !Number.isFinite(bytes)) return null;
+
+    if (type === "chat") {
+      if (format !== "jsonl" || typeof item.messageCount !== "number" || !Number.isFinite(item.messageCount)) {
+        return null;
+      }
+      items.push({ type: "chat", id, name, format: "jsonl", messageCount: item.messageCount, bytes });
+      continue;
+    }
+
+    if (type === "character") {
+      if (format !== "native") return null;
+      items.push({ type: "character", id, name, format: "native", bytes });
+      continue;
+    }
+
+    return null;
+  }
+
+  return {
+    from,
+    offerId,
+    expiresAt,
+    manifest: {
+      version: 1,
+      createdAt: manifest.createdAt,
+      expiresAt: manifest.expiresAt,
+      sourceApp: "Marinara Engine",
+      sourceVersion: manifest.sourceVersion,
+      items,
+      totalBytes: manifest.totalBytes,
+    },
+  };
+}
+
 export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModalProps) {
   const previewTransfer = usePreviewLanTransfer();
   const importTransfer = useImportLanTransferFromOffer();
@@ -42,7 +105,8 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
   const previewRequestIdRef = useRef(0);
 
   const trimmedPayload = transferPayload.trim();
-  const isBusy = previewTransfer.isPending || importTransfer.isPending;
+  const isImporting = importTransfer.isPending;
+  const isBusy = previewTransfer.isPending || isImporting;
   const canPreview = trimmedPayload.length > 0 && !isBusy;
   const canImport = trimmedPayload.length > 0 && previewedPayload === trimmedPayload && !isBusy;
   const itemCount = preview?.manifest.items.length ?? 0;
@@ -65,6 +129,8 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
 
   const handlePayloadChange = useCallback(
     (value: string) => {
+      if (importTransfer.isPending) return;
+
       currentTrimmedPayloadRef.current = value.trim();
       previewRequestIdRef.current += 1;
       setTransferPayload(value);
@@ -100,9 +166,20 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
       const nextPreview = await previewTransfer.mutateAsync({ transferPayload: payload });
       if (previewRequestIdRef.current !== requestId || currentTrimmedPayloadRef.current !== payload) return;
 
-      setPreview(nextPreview);
+      const normalizedPreview = normalizePreviewResponse(nextPreview);
+      if (!normalizedPreview) {
+        setPreview(null);
+        setPreviewedPayload(null);
+        setLocalError("The sender returned an invalid transfer preview.");
+        setStatusMessage(null);
+        return;
+      }
+
+      setPreview(normalizedPreview);
       setPreviewedPayload(payload);
-      setStatusMessage(`Preview ready: ${nextPreview.manifest.items.length} item${nextPreview.manifest.items.length === 1 ? "" : "s"}.`);
+      setStatusMessage(
+        `Preview ready: ${normalizedPreview.manifest.items.length} item${normalizedPreview.manifest.items.length === 1 ? "" : "s"}.`,
+      );
     } catch {
       if (previewRequestIdRef.current !== requestId || currentTrimmedPayloadRef.current !== payload) return;
 
@@ -135,8 +212,13 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
     }
   }, [importTransfer, onClose, previewedPayload, transferPayload]);
 
+  const handleClose = useCallback(() => {
+    if (importTransfer.isPending) return;
+    onClose();
+  }, [importTransfer.isPending, onClose]);
+
   return (
-    <Modal open={open} onClose={onClose} title="Receive from Device" width="max-w-2xl">
+    <Modal open={open} onClose={handleClose} title="Receive from Device" width="max-w-2xl">
       <div className="space-y-4">
         <div className="rounded-lg border border-[var(--border)]/60 bg-[var(--card)]/70 p-4">
           <div className="flex items-start gap-3">
@@ -157,8 +239,9 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
           <textarea
             value={transferPayload}
             onChange={(event) => handlePayloadChange(event.target.value)}
+            disabled={isImporting}
             placeholder="Paste the transfer payload from the sending device"
-            className="min-h-36 w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-xs text-[var(--foreground)] outline-none transition-shadow placeholder:text-[var(--muted-foreground)] focus:ring-2 focus:ring-[var(--primary)]/40"
+            className="min-h-36 w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-xs text-[var(--foreground)] outline-none transition-shadow placeholder:text-[var(--muted-foreground)] focus:ring-2 focus:ring-[var(--primary)]/40 disabled:cursor-not-allowed disabled:opacity-70"
           />
         </label>
 
