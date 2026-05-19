@@ -23,7 +23,8 @@ export function useCreateLanTransferOffer() {
 
 export function useCancelLanTransferOffer() {
   return useMutation({
-    mutationFn: (offerId: string) => api.delete<{ success: boolean }>(`/lan-transfer/offers/${offerId}`),
+    mutationFn: (offerId: string) =>
+      api.delete<{ success: boolean }>(`/lan-transfer/offers/${encodeURIComponent(offerId)}`),
   });
 }
 
