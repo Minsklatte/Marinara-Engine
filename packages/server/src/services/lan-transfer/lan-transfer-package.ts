@@ -290,7 +290,10 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
 }
 
 function isUsableTimestamp(value: unknown): value is string {
-  return typeof value === "string" && Number.isFinite(Date.parse(value));
+  if (typeof value !== "string") return false;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) && date.toISOString() === value;
 }
 
 function getPackageItemBytes(item: unknown): number | null {
@@ -330,11 +333,20 @@ function validateManifestItemMatchesPackageItem(
 }
 
 function isNativeCharacterEnvelope(value: unknown): value is Record<string, unknown> {
+  if (
+    !isRecord(value) ||
+    value.type !== "marinara_character" ||
+    value.version !== 1 ||
+    !isRecord(value.data)
+  ) {
+    return false;
+  }
+
+  const data = value.data;
   return (
-    isRecord(value) &&
-    value.type === "marinara_character" &&
-    value.version === 1 &&
-    isRecord(value.data)
+    typeof data.spec === "string" &&
+    typeof data.spec_version === "string" &&
+    isRecord(data.data)
   );
 }
 

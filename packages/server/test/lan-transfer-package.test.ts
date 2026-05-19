@@ -135,8 +135,50 @@ test("rejects expired packages", () => {
   assert.equal(result.ok, false);
 });
 
+test("rejects malformed but parseable timestamps", () => {
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-02-31T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [{ type: "chat", id: "chat-1", name: "Chat", format: "jsonl", messageCount: 1, bytes: CHAT_BYTES }],
+        totalBytes: CHAT_BYTES,
+      },
+      items: [{ type: "chat", id: "chat-1", name: "Chat", format: "jsonl", content: CHAT_CONTENT }],
+    },
+    { now: () => NOW },
+  );
+
+  assert.equal(result.ok, false);
+});
+
+test("rejects loose timestamp strings", () => {
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "0",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [{ type: "chat", id: "chat-1", name: "Chat", format: "jsonl", messageCount: 1, bytes: CHAT_BYTES }],
+        totalBytes: CHAT_BYTES,
+      },
+      items: [{ type: "chat", id: "chat-1", name: "Chat", format: "jsonl", content: CHAT_CONTENT }],
+    },
+    { now: () => NOW },
+  );
+
+  assert.equal(result.ok, false);
+});
+
 test("rejects malformed character envelope", () => {
-  const envelope = { type: "marinara_character", version: 1 };
+  const envelope = { type: "marinara_character", version: 1, data: {} };
   const bytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
   const result = validateLanTransferPackage(
     {
@@ -156,4 +198,35 @@ test("rejects malformed character envelope", () => {
   );
 
   assert.equal(result.ok, false);
+});
+
+test("accepts a valid native character envelope", () => {
+  const envelope = {
+    type: "marinara_character",
+    version: 1,
+    data: {
+      spec: "chara_card_v2",
+      spec_version: "2.0",
+      data: { name: "Character" },
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [{ type: "character", id: "char-1", name: "Character", format: "native", bytes }],
+        totalBytes: bytes,
+      },
+      items: [{ type: "character", id: "char-1", name: "Character", format: "native", envelope }],
+    },
+    { now: () => NOW },
+  );
+
+  assert.equal(result.ok, true);
 });
