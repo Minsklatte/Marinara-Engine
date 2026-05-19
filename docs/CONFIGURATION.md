@@ -205,6 +205,11 @@ If Marinara is behind a Docker reverse proxy or tunnel container on the default 
 
 For the broader "trust every private network" toggle (RFC 1918 + CGNAT + ULA + link-local), see `ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK` under [Safe-by-default lockdown](#safe-by-default-lockdown). That one is _off_ by default and stays off — it's much broader than these interface-scoped flags.
 
+### LAN Transfer
+
+`LAN_TRANSFER_ENABLED=true` enables encrypted, user-initiated LAN transfer offers for selected chats and characters.
+The feature is disabled by default. It does not relax Basic Auth, admin-secret, IP allowlist, or CSRF behavior for normal APIs.
+
 ### Privileged APIs
 
 Destructive or high-risk features require `ADMIN_SECRET` in addition to the global network/auth checks. The official client sends it as `X-Admin-Secret` after you save it in **Settings -> Advanced -> Admin Access**. These APIs fail closed when `ADMIN_SECRET` is unset or wrong:
