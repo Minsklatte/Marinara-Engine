@@ -37,6 +37,20 @@ test("stores, reads, consumes, and removes offers", () => {
   assert.equal(store.get("offer-1"), null);
 });
 
+test("deletes offers explicitly", () => {
+  const store = createLanTransferOfferStore({ maxOffers: 2, now: () => 1000 });
+  store.put({
+    offerId: "offer-1",
+    downloadTokenHash: "hash-1",
+    expiresAtMs: 2000,
+    manifest,
+    encryptedPackage,
+  });
+
+  assert.equal(store.delete("offer-1"), true);
+  assert.equal(store.get("offer-1"), null);
+});
+
 test("expires offers before returning them", () => {
   const store = createLanTransferOfferStore({ maxOffers: 2, now: () => 3000 });
   store.put({

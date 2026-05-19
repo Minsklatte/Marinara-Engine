@@ -52,3 +52,27 @@ test("rejects payloads without token and secret", () => {
 
   assert.equal(parseLanTransferPayload(payload), null);
 });
+
+test("rejects payloads missing downloadToken", () => {
+  const payload = JSON.stringify({
+    type: "marinara-lan-transfer",
+    version: 1,
+    from: "http://192.168.1.50:7860",
+    offerId: "offer_123",
+    secret: "secret-key",
+  });
+
+  assert.equal(parseLanTransferPayload(payload), null);
+});
+
+test("rejects payloads missing secret", () => {
+  const payload = JSON.stringify({
+    type: "marinara-lan-transfer",
+    version: 1,
+    from: "http://192.168.1.50:7860",
+    offerId: "offer_123",
+    downloadToken: "download-token",
+  });
+
+  assert.equal(parseLanTransferPayload(payload), null);
+});
