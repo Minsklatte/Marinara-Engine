@@ -37,7 +37,7 @@ import {
 const OFFER_TTL_MS = 10 * 60_000;
 const REMOTE_REQUEST_TIMEOUT_MS = 8_000;
 const REMOTE_MANIFEST_RESPONSE_MAX_BYTES = 1024 * 1024;
-const REMOTE_ENCRYPTED_RESPONSE_MAX_BYTES = Math.ceil(LAN_TRANSFER_PACKAGE_MAX_BYTES * 1.5) + 1024 * 1024;
+const REMOTE_ENCRYPTED_RESPONSE_MAX_BYTES = LAN_TRANSFER_PACKAGE_MAX_BYTES * 4;
 const DISABLED_RESPONSE = { error: "LAN transfer is disabled" };
 type UndiciRequestOptions = NonNullable<Parameters<typeof undiciRequest>[1]> & { maxRedirections: 0 };
 type ValidatedLanTransferOrigin = Extract<LanTransferOriginValidationResult, { ok: true }>;

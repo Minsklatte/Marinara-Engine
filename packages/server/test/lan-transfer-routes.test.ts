@@ -10,9 +10,13 @@ import {
   LAN_TRANSFER_VERSION,
   type LanTransferEncryptedPackage,
   type LanTransferManifest,
+  type LanTransferPackage,
 } from "@marinara-engine/shared";
 import { createFileNativeDB } from "../src/db/file-backed-store.js";
-import { hashLanTransferToken } from "../src/services/lan-transfer/lan-transfer-crypto.js";
+import {
+  encryptLanTransferPackage,
+  hashLanTransferToken,
+} from "../src/services/lan-transfer/lan-transfer-crypto.js";
 import { lanTransferOfferStore } from "../src/services/lan-transfer/lan-transfer-offer-store.js";
 import { serializeLanTransferPayload } from "../src/services/lan-transfer/lan-transfer-payload.js";
 
@@ -36,6 +40,12 @@ const testEncryptedPackage: LanTransferEncryptedPackage = {
   aad: "aad",
   ciphertext: "ciphertext",
   tag: "tag",
+};
+
+const testPackage: LanTransferPackage = {
+  version: 1,
+  manifest: testManifest,
+  items: [],
 };
 
 function withEnv<T>(patch: EnvPatch, fn: () => Promise<T>) {
@@ -215,7 +225,7 @@ test("preview fetches a sender manifest from a validated loopback origin", async
     });
   }));
 
-test("preview fetch pins the validated sender address", async () =>
+test("preview fetch uses the validated sender address after DNS rebinding", async () =>
   withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
     const offerId = "route-preview-pinned-address";
     const downloadToken = "download-token";
@@ -233,7 +243,11 @@ test("preview fetch pins the validated sender address", async () =>
     assert.equal(typeof address, "object");
     assert.notEqual(address, null);
     const originalLookup = dns.lookup;
-    dns.lookup = (async () => [{ address: "127.0.0.1", family: 4 }]) as typeof dns.lookup;
+    let lookupCalls = 0;
+    dns.lookup = (async () => {
+      lookupCalls += 1;
+      return [{ address: lookupCalls === 1 ? "127.0.0.1" : "8.8.8.8", family: 4 }];
+    }) as typeof dns.lookup;
 
     try {
       const transferPayload = serializeLanTransferPayload({
@@ -258,7 +272,52 @@ test("preview fetch pins the validated sender address", async () =>
         expiresAt: testManifest.expiresAt,
         manifest: testManifest,
       });
+      assert.equal(lookupCalls, 1);
     } finally {
       dns.lookup = originalLookup;
     }
+  }));
+
+test("import-from-offer downloads, decrypts, validates, and imports a remote package", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const offerId = "route-import-from-offer";
+    const downloadToken = "download-token";
+    const secret = "transfer-secret";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: testManifest,
+      encryptedPackage: encryptLanTransferPackage(JSON.stringify(testPackage), secret),
+    });
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: `http://127.0.0.1:${address.port}`,
+      offerId,
+      downloadToken,
+      secret,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/import-from-offer",
+      payload: { transferPayload },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(JSON.parse(response.body), {
+      imported: {
+        chats: 0,
+        characters: 0,
+      },
+      skipped: [],
+    });
+    assert.equal(lanTransferOfferStore.get(offerId), null);
   }));
