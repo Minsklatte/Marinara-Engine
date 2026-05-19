@@ -1,0 +1,456 @@
+# LAN Device Transfer MVP Design
+
+## Goal
+
+Add a LAN-only, user-initiated transfer feature so two Marinara Engine instances on the same trusted local network can move selected chats and characters between each other without using cloud storage or weakening the app's local-first security posture.
+
+The first target setup is a Linux Marinara instance and a separate Android/Termux Marinara instance. The feature must work in both directions.
+
+## Non-Goals
+
+- No cloud relay.
+- No automatic sync.
+- No account system.
+- No background device discovery for MVP.
+- No in-app camera requirement for MVP.
+- No full profile transfer in MVP.
+- No conflict resolution beyond ordinary import behavior.
+- No transfer of arbitrary files beyond chat and character export payloads already supported by Marinara.
+
+## Existing Capabilities To Reuse
+
+- Chat export:
+  - `GET /api/chats/:id/export?format=jsonl|text`
+  - `POST /api/chats/export/bulk`
+- Chat import:
+  - Existing JSONL import path used by `ChatFilesDrawer`.
+- Character export:
+  - `GET /api/characters/:id/export?format=native|compatible`
+  - `POST /api/characters/export-bulk`
+- Character import:
+  - Existing Marinara native import route: `POST /api/import/marinara`.
+  - Existing `.marinara` package route can remain out of MVP unless selected character exports require it.
+- Frontend modal patterns:
+  - `ModalRenderer` and `useUIStore().openModal(...)`.
+- Existing admin/auth model:
+  - LAN access can require Basic Auth/admin secret depending on server config. This feature must not relax those rules globally.
+
+## Recommended MVP Approach
+
+Use a pull-based LAN transfer.
+
+The sender creates a temporary local offer. The receiver fetches the offer from the sender using a pasted/scanned transfer payload, previews it, then imports it.
+
+The sender never pushes directly into the receiver. This reduces the receiver-side attack surface because import only happens after a local user action and preview confirmation.
+
+## User Flows
+
+### Send From Device
+
+1. User opens a chat/character list or settings import/export panel.
+2. User chooses `Send to Device`.
+3. User selects one or more supported items:
+   - Chats as JSONL.
+   - Characters as native Marinara JSON.
+4. Marinara creates a temporary transfer offer.
+5. Sender UI shows:
+   - Copyable transfer payload.
+   - QR code containing the same payload.
+   - Expiration countdown.
+   - One-time-use status.
+   - Cancel button.
+6. Sender keeps the offer available until it is downloaded once, cancelled, or expires.
+
+### Receive On Device
+
+1. User opens `Receive from Device` on the receiving Marinara instance.
+2. User scans the QR with the phone camera or another external QR scanner, then pastes the payload into Marinara. No in-app camera permission is needed.
+3. Receiver sends the payload to its own local backend.
+4. Receiver backend validates the sender URL against LAN-only rules and fetches the manifest from the sender.
+5. Receiver shows a preview:
+   - Sender host.
+   - Transfer type.
+   - Chat count and names.
+   - Character count and names.
+   - Approximate payload size.
+   - Expiration status.
+6. User clicks `Import`.
+7. Receiver backend downloads, verifies, decrypts, validates, and imports.
+8. Receiver shows an import summary.
+
+## Transfer Payload
+
+The QR/copy payload is plain text JSON for MVP. It can be displayed as text, copied, or encoded into a QR.
+
+Example:
+
+```json
+{
+  "type": "marinara-lan-transfer",
+  "version": 1,
+  "from": "http://192.168.1.50:7860",
+  "offerId": "01HZ7P5Q7JYH3K8K1E6Q2F4W8D",
+  "downloadToken": "base64url-random-128-bit-token",
+  "secret": "base64url-random-256-bit-secret"
+}
+```
+
+The `downloadToken` authorizes access to the temporary offer. The `secret` decrypts the package. Keeping these separate lets the receiver prove it has the offer payload without sending the decryption key back to the sender.
+
+The `from` field is an origin only: scheme, host, and optional port. It must not include credentials, a path, a query string, or a fragment.
+
+The payload may later be represented as a `marinara-transfer:` URI, but raw JSON is easier to debug for MVP. A URI wrapper must still carry the same fields.
+
+## Encryption And Authentication
+
+MVP includes encryption because the feature is intended for public Marinara and should not train users to move plaintext over LAN.
+
+### Encryption Model
+
+- Sender builds a transfer package locally.
+- Sender generates a random 256-bit `secret` using a cryptographically secure RNG.
+- Sender generates a separate random `downloadToken` using a cryptographically secure RNG.
+- Sender derives an encryption key from the secret using HKDF with a per-offer salt.
+- Sender encrypts the package with authenticated encryption.
+- Sender and receiver backends use Node crypto APIs for MVP. A later browser-side variant can use Web Crypto AES-GCM.
+- The offer manifest and encrypted package include a format version and algorithm metadata.
+
+### Secret Handling
+
+- The `secret` is only present in the transfer payload shown to the user.
+- The sender API does not expose the secret after offer creation.
+- The secret must not be logged.
+- The sender stores only ciphertext, non-secret offer metadata, and a hash of the `downloadToken`.
+- The receiver sends only the `offerId` and `downloadToken` to the sender to retrieve the manifest or encrypted package. It does not send the decryption secret back to the sender.
+
+### Why No Short Code As Key
+
+A short human code is not enough entropy to use as an encryption key. If a short code is added later, it must either:
+
+- Only identify the transfer while the QR/paste payload carries the real secret, or
+- Use a PAKE design, which is out of scope for MVP.
+
+## LAN-Only Boundary
+
+The feature is LAN-only by policy and UX, but the implementation must not assume LAN equals safe.
+
+Controls:
+
+- The send endpoint refuses to create offers unless LAN transfer is enabled in settings or environment config.
+- Offers are explicit user actions, never automatic.
+- Offer URLs must use local addresses shown to the user.
+- If the server is reached from a public IP or a non-private address, the receive UI warns and blocks by default.
+- Receiver-side fetches must defend against SSRF:
+  - Allow only `http:` and `https:` URLs.
+  - Reject URLs with credentials, path traversal, query strings, or fragments in the `from` origin.
+  - Resolve hostnames before fetch and allow only loopback or RFC1918 private addresses by default.
+  - Block link-local metadata ranges such as `169.254.0.0/16`.
+  - Revalidate the resolved address after redirects, or disable redirects for MVP.
+  - Apply short timeouts and small response-size limits.
+- Existing Basic Auth and admin-secret checks stay intact for normal app APIs and for creating/cancelling offers. Manifest and download endpoints are separately authorized by the high-entropy `downloadToken` and expose only the prepared temporary offer.
+- This feature must not set `ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK` or bypass normal app auth globally.
+- Offer endpoints do not list active offers.
+
+## Server API
+
+Add a new route module registered at `/api/lan-transfer`.
+
+The sender and receiver roles use different endpoints. The receiver frontend talks to its own Marinara backend. That backend fetches the sender's offer, decrypts the package locally on the receiving instance, validates it, and imports it. This avoids browser cross-origin LAN fetch issues and keeps the MVP independent of in-app camera permissions.
+
+### Sender Endpoints
+
+### `POST /api/lan-transfer/offers`
+
+Creates an encrypted offer.
+
+Request body:
+
+```ts
+{
+  items: Array<
+    | { type: "chat"; id: string; format?: "jsonl" }
+    | { type: "character"; id: string; format?: "native" }
+  >;
+}
+```
+
+Response:
+
+```ts
+{
+  offerId: string;
+  transferPayload: string;
+  expiresAt: string;
+  manifest: LanTransferManifest;
+}
+```
+
+### `POST /api/lan-transfer/offers/:offerId/manifest`
+
+Returns public non-secret manifest fields for preview. It requires the one-time offer token from the payload, but not the encryption secret.
+
+Request body:
+
+```ts
+{
+  downloadToken: string;
+}
+```
+
+Response:
+
+```ts
+{
+  offerId: string;
+  expiresAt: string;
+  consumed: boolean;
+  manifest: LanTransferManifest;
+}
+```
+
+### `POST /api/lan-transfer/offers/:offerId/download`
+
+Downloads the encrypted package and marks the offer consumed. Requires the one-time offer token. The token is sent in the request body rather than a URL so it is less likely to appear in proxy, browser, or server access logs.
+
+Request body:
+
+```ts
+{
+  downloadToken: string;
+}
+```
+
+Response body:
+
+```ts
+{
+  version: 1;
+  algorithm: "AES-256-GCM";
+  salt: string;
+  iv: string;
+  aad: string;
+  ciphertext: string;
+}
+```
+
+### `DELETE /api/lan-transfer/offers/:offerId`
+
+Cancels a live offer from the sender UI. Requires the same local authorization as creating the offer.
+
+### Receiver Endpoints
+
+### `POST /api/lan-transfer/preview`
+
+Receives the pasted transfer payload from the local frontend, validates its shape, verifies the sender address is allowed by LAN policy, and asks the sender for the manifest.
+
+Request body:
+
+```ts
+{
+  transferPayload: string;
+}
+```
+
+Response:
+
+```ts
+{
+  from: string;
+  offerId: string;
+  expiresAt: string;
+  manifest: LanTransferManifest;
+}
+```
+
+### `POST /api/lan-transfer/import-from-offer`
+
+Receives the pasted transfer payload after preview confirmation, fetches the encrypted package from the sender, decrypts it with the payload secret, validates it, and imports it.
+
+Request body:
+
+```ts
+{
+  transferPayload: string;
+  options?: {
+    chatImportMode?: "new-chat" | "branch";
+    characterImportMode?: "new-copy";
+  };
+}
+```
+
+Response:
+
+```ts
+{
+  imported: {
+    chats: number;
+    characters: number;
+  };
+  skipped: Array<{ type: string; name?: string; reason: string }>;
+}
+```
+
+The implementation uses internal helpers for decrypted package validation and import. It must not expose a public route that accepts arbitrary decrypted transfer packages for MVP.
+
+## Package Format
+
+```ts
+interface LanTransferPayload {
+  type: "marinara-lan-transfer";
+  version: 1;
+  from: string;
+  offerId: string;
+  downloadToken: string;
+  secret: string;
+}
+
+interface LanTransferManifest {
+  version: 1;
+  createdAt: string;
+  expiresAt: string;
+  sourceApp: "Marinara Engine";
+  sourceVersion: string;
+  items: Array<
+    | { type: "chat"; id: string; name: string; format: "jsonl"; messageCount: number; bytes: number }
+    | { type: "character"; id: string; name: string; format: "native"; bytes: number }
+  >;
+  totalBytes: number;
+}
+
+interface LanTransferPackage {
+  version: 1;
+  manifest: LanTransferManifest;
+  items: Array<
+    | { type: "chat"; id: string; name: string; format: "jsonl"; content: string }
+    | { type: "character"; id: string; name: string; format: "native"; envelope: unknown }
+  >;
+}
+```
+
+## Frontend UX
+
+### Send Entry Points
+
+- Chat file drawer: add `Send to Device` near JSONL/Text export for the active chat.
+- Chat sidebar multi-select: add `Send to Device` next to batch export.
+- Characters panel: add `Send to Device` for selected characters.
+- Settings import/export panel: add generic `Receive from Device`.
+
+### Receive Entry Point
+
+- Settings -> Import area: `Receive from Device`.
+- Optional later: a persistent import button in the sidebar or command palette.
+
+### QR Handling
+
+MVP does not request camera access.
+
+Sender shows a QR code of the transfer payload. Receiver supports paste. Users can scan with Android's system camera or scanner app, copy the decoded payload/link, and paste into Marinara.
+
+Later enhancement: optional `Scan QR` button using browser camera APIs, behind explicit user click and permission prompt.
+
+## Storage And Expiration
+
+Use an in-memory server store for MVP.
+
+- Default TTL: 10 minutes.
+- Max active offers: small bounded count, e.g. 10.
+- Max package size: explicit cap, e.g. 25 MB for MVP.
+- One-time download: consuming a package removes it.
+- Cancel removes immediately.
+- Server restart clears offers.
+
+This is acceptable for MVP because the transfer is interactive and LAN-only.
+
+## Import Safety
+
+Treat decrypted packages as untrusted input.
+
+Controls:
+
+- Validate package schema before import.
+- Validate item counts and byte sizes.
+- Reject unknown item types.
+- Reject oversized package content.
+- Reuse existing chat and character import functions where possible.
+- Do not execute embedded data.
+- Do not overwrite existing chats/characters in MVP; import as new copies or branches.
+- Show a preview before import.
+
+## Error Handling
+
+Receiver errors:
+
+- Cannot reach sender host.
+- Transfer expired.
+- Transfer already consumed.
+- Invalid transfer payload.
+- Decryption failed.
+- Package schema invalid.
+- Import partially failed.
+
+Sender errors:
+
+- Selected item no longer exists.
+- Package exceeds size limit.
+- LAN transfer disabled.
+- Offer store full.
+
+All errors should be actionable and short in the UI.
+
+## Security Review Checklist
+
+- No plaintext transfer package leaves the sender process.
+- Offer endpoint does not list active offers.
+- Offer IDs and tokens are high entropy.
+- Secrets are not logged.
+- Download is one-time and TTL-bound.
+- Import is explicit and previewed.
+- Existing auth/admin rules are not relaxed for normal app APIs or offer creation/cancellation.
+- Manifest and download access is limited to the token-bound offer capability.
+- Receiver URL validation blocks SSRF to public, metadata, and non-HTTP targets.
+- Payload size and item count are bounded.
+- Decryption/authentication failure aborts before parsing package content.
+- Unknown package versions fail closed.
+- Public/non-private source addresses are blocked or require explicit override.
+
+## Testing Strategy
+
+Unit tests:
+
+- Package builder includes selected chat JSONL and native character envelope.
+- Package builder rejects unsupported types and missing records.
+- Offer store expires offers and consumes once.
+- Transfer payload parser rejects malformed payloads.
+- Encryption round-trip succeeds and tamper fails.
+- Import validator rejects malformed/oversized packages.
+
+Route tests:
+
+- Create offer returns manifest and payload.
+- Manifest fetch works with valid token and fails without it.
+- Download consumes offer once.
+- Expired offer cannot be fetched.
+- Preview rejects public, metadata, malformed, and non-HTTP sender URLs.
+- Import-from-offer route imports chats/characters as copies.
+
+Manual smoke:
+
+- Linux sends one chat to Android.
+- Android sends one chat to Linux.
+- Linux sends one character to Android.
+- Android sends one character to Linux.
+- Expired transfer is blocked.
+- Already consumed transfer is blocked.
+- Wrong secret fails decrypt/import.
+
+## MVP Acceptance Criteria
+
+- User can transfer selected chats both Linux -> Android and Android -> Linux on the same LAN.
+- User can transfer selected characters both directions.
+- No cloud service is involved.
+- No camera permission is required.
+- Receiver previews contents before import.
+- Transfers expire and are one-time use.
+- Transfer package is encrypted before it leaves the sender instance.
+- Existing export/import functionality continues to work unchanged.
