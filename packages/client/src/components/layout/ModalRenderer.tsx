@@ -55,6 +55,34 @@ const SendToDeviceModal = lazy(() =>
   import("../modals/SendToDeviceModal").then((module) => ({ default: module.SendToDeviceModal })),
 );
 
+function getLanTransferItems(value: unknown): LanTransferItemRequest[] {
+  if (!Array.isArray(value)) return [];
+
+  const items: LanTransferItemRequest[] = [];
+  for (const item of value) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
+
+    const raw = item as Record<string, unknown>;
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (!id) continue;
+
+    if (raw.type === "chat") {
+      if (raw.format !== undefined && raw.format !== "jsonl") continue;
+      items.push(raw.format === "jsonl" ? { type: "chat", id, format: "jsonl" } : { type: "chat", id });
+      continue;
+    }
+
+    if (raw.type === "character") {
+      if (raw.format !== undefined && raw.format !== "native") continue;
+      items.push(
+        raw.format === "native" ? { type: "character", id, format: "native" } : { type: "character", id },
+      );
+    }
+  }
+
+  return items;
+}
+
 export function ModalRenderer() {
   const modal = useUIStore((s) => s.modal);
   const closeModal = useUIStore((s) => s.closeModal);
@@ -114,7 +142,7 @@ export function ModalRenderer() {
         <SendToDeviceModal
           open
           onClose={closeModal}
-          items={(modal?.props?.items as LanTransferItemRequest[] | undefined) ?? []}
+          items={getLanTransferItems(modal?.props?.items)}
           title={typeof modal?.props?.title === "string" ? modal.props.title : undefined}
         />
       );
