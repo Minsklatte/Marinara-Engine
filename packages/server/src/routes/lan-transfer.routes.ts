@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { request as undiciRequest } from "undici";
+import { isIP } from "node:net";
+import { Agent, request as undiciRequest } from "undici";
 import type {
   LanTransferEncryptedPackage,
   LanTransferItemRequest,
@@ -28,13 +29,18 @@ import {
   parseLanTransferPayload,
   serializeLanTransferPayload,
 } from "../services/lan-transfer/lan-transfer-payload.js";
-import { validateLanTransferOrigin } from "../services/lan-transfer/lan-transfer-url-policy.js";
+import {
+  validateLanTransferOrigin,
+  type LanTransferOriginValidationResult,
+} from "../services/lan-transfer/lan-transfer-url-policy.js";
 
 const OFFER_TTL_MS = 10 * 60_000;
 const REMOTE_REQUEST_TIMEOUT_MS = 8_000;
-const REMOTE_RESPONSE_MAX_BYTES = LAN_TRANSFER_PACKAGE_MAX_BYTES;
+const REMOTE_MANIFEST_RESPONSE_MAX_BYTES = 1024 * 1024;
+const REMOTE_ENCRYPTED_RESPONSE_MAX_BYTES = Math.ceil(LAN_TRANSFER_PACKAGE_MAX_BYTES * 1.5) + 1024 * 1024;
 const DISABLED_RESPONSE = { error: "LAN transfer is disabled" };
 type UndiciRequestOptions = NonNullable<Parameters<typeof undiciRequest>[1]> & { maxRedirections: 0 };
+type ValidatedLanTransferOrigin = Extract<LanTransferOriginValidationResult, { ok: true }>;
 
 export async function lanTransferRoutes(app: FastifyInstance) {
   app.addHook("preHandler", async (_request, reply) => {
@@ -138,7 +144,7 @@ export async function lanTransferRoutes(app: FastifyInstance) {
         offerId: string;
         expiresAt: string;
         manifest: unknown;
-      }>(payloadResult.payload, "manifest");
+      }>(payloadResult.payload, originResult, "manifest");
 
       return reply.send({
         from: payloadResult.payload.from,
@@ -161,6 +167,7 @@ export async function lanTransferRoutes(app: FastifyInstance) {
     try {
       const encryptedPackage = await fetchSenderJson<LanTransferEncryptedPackage>(
         payloadResult.payload,
+        originResult,
         "download",
       );
       const plaintext = decryptLanTransferPackage(encryptedPackage, payloadResult.payload.secret);
@@ -207,8 +214,13 @@ function getRequestOrigin(request: FastifyRequest): string {
   return `${protocol}://${host}`;
 }
 
-async function fetchSenderJson<T>(payload: LanTransferPayload, endpoint: "manifest" | "download"): Promise<T> {
-  const url = new URL(`/api/lan-transfer/offers/${encodeURIComponent(payload.offerId)}/${endpoint}`, payload.from);
+async function fetchSenderJson<T>(
+  payload: LanTransferPayload,
+  origin: ValidatedLanTransferOrigin,
+  endpoint: "manifest" | "download",
+): Promise<T> {
+  const url = new URL(`/api/lan-transfer/offers/${encodeURIComponent(payload.offerId)}/${endpoint}`, origin.url);
+  const dispatcher = createPinnedSenderAgent(origin.addresses);
   const requestOptions: UndiciRequestOptions = {
     method: "POST",
     headers: {
@@ -216,21 +228,53 @@ async function fetchSenderJson<T>(payload: LanTransferPayload, endpoint: "manife
       accept: "application/json",
     },
     body: JSON.stringify({ downloadToken: payload.downloadToken } satisfies LanTransferManifestRequest),
+    dispatcher,
     maxRedirections: 0,
     signal: AbortSignal.timeout(REMOTE_REQUEST_TIMEOUT_MS),
   };
-  const response = await undiciRequest(url, requestOptions);
-  const text = await readRemoteBody(response.body, REMOTE_RESPONSE_MAX_BYTES);
-
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`LAN transfer sender returned HTTP ${response.statusCode}`);
-  }
 
   try {
-    return JSON.parse(text) as T;
-  } catch (err) {
-    throw new Error("LAN transfer sender returned invalid JSON", { cause: err });
+    const response = await undiciRequest(url, requestOptions);
+    const maxBytes =
+      endpoint === "download" ? REMOTE_ENCRYPTED_RESPONSE_MAX_BYTES : REMOTE_MANIFEST_RESPONSE_MAX_BYTES;
+    const text = await readRemoteBody(response.body, maxBytes);
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw new Error(`LAN transfer sender returned HTTP ${response.statusCode}`);
+    }
+
+    try {
+      return JSON.parse(text) as T;
+    } catch (err) {
+      throw new Error("LAN transfer sender returned invalid JSON", { cause: err });
+    }
+  } finally {
+    await dispatcher.close().catch(() => undefined);
   }
+}
+
+function createPinnedSenderAgent(addresses: string[]): Agent {
+  return new Agent({
+    connect: {
+      lookup(_hostname, options, callback) {
+        const family = options.family === 4 || options.family === 6 ? options.family : undefined;
+        const selected = addresses.find((address) => !family || isIP(address) === family) ?? addresses[0];
+        if (!selected) {
+          callback(new Error("LAN transfer origin has no validated addresses"), "", 4);
+          return;
+        }
+
+        const selectedFamily = isIP(selected);
+        if (selectedFamily !== 4 && selectedFamily !== 6) {
+          callback(new Error("LAN transfer origin has an invalid validated address"), "", 4);
+          return;
+        }
+
+        if (options.all) callback(null, [{ address: selected, family: selectedFamily }]);
+        else callback(null, selected, selectedFamily);
+      },
+    },
+  });
 }
 
 async function readRemoteBody(
