@@ -39,6 +39,10 @@ export async function buildLanTransferPackage(
 
   for (const item of items) {
     if (item.type === "chat") {
+      if (item.format === "native") {
+        throw new Error("Native chat LAN transfer is not implemented yet");
+      }
+
       const chat = await chats.getById(item.id);
       if (!chat) throw new Error(`Chat not found: ${item.id}`);
 
@@ -243,7 +247,9 @@ function validateManifestItem(item: unknown): { ok: true } | { ok: false; error:
   }
 
   if (item.type === "chat") {
-    if (item.format !== "jsonl") return { ok: false, error: "Chat manifest item must use jsonl format" };
+    if (item.format !== "jsonl" && item.format !== "native") {
+      return { ok: false, error: "Chat manifest item must use jsonl or native format" };
+    }
     if (
       typeof item.messageCount !== "number" ||
       !Number.isFinite(item.messageCount) ||
@@ -251,6 +257,15 @@ function validateManifestItem(item: unknown): { ok: true } | { ok: false; error:
       !Number.isInteger(item.messageCount)
     ) {
       return { ok: false, error: "Chat manifest item messageCount must be a non-negative integer" };
+    }
+    if (
+      item.format === "native" &&
+      (typeof item.characterCount !== "number" ||
+        !Number.isFinite(item.characterCount) ||
+        item.characterCount < 0 ||
+        !Number.isInteger(item.characterCount))
+    ) {
+      return { ok: false, error: "Native chat manifest item characterCount must be a non-negative integer" };
     }
     return { ok: true };
   }
@@ -273,9 +288,17 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
   }
 
   if (item.type === "chat") {
-    if (item.format !== "jsonl") return { ok: false, error: "Chat package item must use jsonl format" };
-    if (typeof item.content !== "string") return { ok: false, error: "Chat package item content must be a string" };
-    return { ok: true };
+    if (item.format === "jsonl") {
+      if (typeof item.content !== "string") return { ok: false, error: "Chat package item content must be a string" };
+      return { ok: true };
+    }
+    if (item.format === "native") {
+      if (!Object.prototype.hasOwnProperty.call(item, "chat")) {
+        return { ok: false, error: "Native chat package item chat must be present" };
+      }
+      return { ok: true };
+    }
+    return { ok: false, error: "Chat package item must use jsonl or native format" };
   }
 
   if (item.type === "character") {
@@ -300,6 +323,14 @@ function getPackageItemBytes(item: unknown): number | null {
   if (!isRecord(item)) return null;
   if (item.type === "chat" && typeof item.content === "string") {
     return Buffer.byteLength(item.content, "utf8");
+  }
+  if (item.type === "chat" && item.format === "native" && Object.prototype.hasOwnProperty.call(item, "chat")) {
+    try {
+      const serialized = JSON.stringify(item.chat);
+      return typeof serialized === "string" ? Buffer.byteLength(serialized, "utf8") : null;
+    } catch {
+      return null;
+    }
   }
   if (item.type === "character" && isRecord(item.envelope)) {
     try {

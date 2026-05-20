@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateLanTransferPackage } from "../src/services/lan-transfer/lan-transfer-package.js";
+import type { FastifyInstance } from "fastify";
+import {
+  buildLanTransferPackage,
+  validateLanTransferPackage,
+} from "../src/services/lan-transfer/lan-transfer-package.js";
 
 const NOW = Date.parse("2026-05-19T00:00:00.000Z");
 const FUTURE_EXPIRES_AT = "2026-05-19T00:10:00.000Z";
@@ -26,6 +30,51 @@ test("accepts a minimal valid transfer package", () => {
   );
 
   assert.equal(result.ok, true);
+});
+
+test("accepts a native chat package item with matching manifest bytes", () => {
+  const chat = { id: "chat-1", messages: [{ role: "user", content: "hi" }] };
+  const bytes = Buffer.byteLength(JSON.stringify(chat), "utf8");
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            type: "chat",
+            id: "chat-1",
+            name: "Chat",
+            format: "native",
+            messageCount: 1,
+            characterCount: 0,
+            bytes,
+          },
+        ],
+        totalBytes: bytes,
+      },
+      items: [{ type: "chat", id: "chat-1", name: "Chat", format: "native", chat }],
+    },
+    { now: () => NOW },
+  );
+
+  assert.equal(result.ok, true);
+});
+
+test("build rejects native chat item requests until native packaging is implemented", async () => {
+  await assert.rejects(
+    () =>
+      buildLanTransferPackage(
+        { db: {} } as FastifyInstance,
+        [{ type: "chat", id: "chat-1", format: "native" }],
+        FUTURE_EXPIRES_AT,
+      ),
+    /Native chat LAN transfer is not implemented yet/,
+  );
 });
 
 test("rejects unknown item types", () => {
