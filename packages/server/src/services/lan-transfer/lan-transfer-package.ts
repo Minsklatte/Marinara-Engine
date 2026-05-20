@@ -321,15 +321,17 @@ function isUsableTimestamp(value: unknown): value is string {
 
 function getPackageItemBytes(item: unknown): number | null {
   if (!isRecord(item)) return null;
-  if (item.type === "chat" && typeof item.content === "string") {
-    return Buffer.byteLength(item.content, "utf8");
-  }
-  if (item.type === "chat" && item.format === "native" && Object.prototype.hasOwnProperty.call(item, "chat")) {
-    try {
-      const serialized = JSON.stringify(item.chat);
-      return typeof serialized === "string" ? Buffer.byteLength(serialized, "utf8") : null;
-    } catch {
-      return null;
+  if (item.type === "chat") {
+    if (item.format === "jsonl" && typeof item.content === "string") {
+      return Buffer.byteLength(item.content, "utf8");
+    }
+    if (item.format === "native" && Object.prototype.hasOwnProperty.call(item, "chat")) {
+      try {
+        const serialized = JSON.stringify(item.chat);
+        return typeof serialized === "string" ? Buffer.byteLength(serialized, "utf8") : null;
+      } catch {
+        return null;
+      }
     }
   }
   if (item.type === "character" && isRecord(item.envelope)) {

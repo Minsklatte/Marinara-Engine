@@ -65,6 +65,41 @@ test("accepts a native chat package item with matching manifest bytes", () => {
   assert.equal(result.ok, true);
 });
 
+test("rejects native chat package bytes that match stray content instead of chat", () => {
+  const chat = { id: "chat-1", messages: [{ role: "user", content: "hi" }] };
+  const content = "stray";
+  const contentBytes = Buffer.byteLength(content, "utf8");
+  assert.notEqual(contentBytes, Buffer.byteLength(JSON.stringify(chat), "utf8"));
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            type: "chat",
+            id: "chat-1",
+            name: "Chat",
+            format: "native",
+            messageCount: 1,
+            characterCount: 0,
+            bytes: contentBytes,
+          },
+        ],
+        totalBytes: contentBytes,
+      },
+      items: [{ type: "chat", id: "chat-1", name: "Chat", format: "native", chat, content }],
+    },
+    { now: () => NOW },
+  );
+
+  assert.deepEqual(result, { ok: false, error: "Manifest item bytes mismatch" });
+});
+
 test("build rejects native chat item requests until native packaging is implemented", async () => {
   await assert.rejects(
     () =>
