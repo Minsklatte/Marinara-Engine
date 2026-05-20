@@ -1,14 +1,17 @@
 export const LAN_TRANSFER_TYPE = "marinara-lan-transfer" as const;
 export const LAN_TRANSFER_VERSION = 1 as const;
 
+export type LanTransferChatFormat = "jsonl" | "native";
+
 export type LanTransferItemRequest =
-  | { type: "chat"; id: string; format?: "jsonl" }
+  | { type: "chat"; id: string; format?: LanTransferChatFormat }
   | { type: "character"; id: string; format?: "native" };
 
 export interface LanTransferPayload {
   type: typeof LAN_TRANSFER_TYPE;
   version: typeof LAN_TRANSFER_VERSION;
   from: string;
+  origins?: string[];
   offerId: string;
   downloadToken: string;
   secret: string;
@@ -22,6 +25,15 @@ export interface LanTransferManifest {
   sourceVersion: string;
   items: Array<
     | { type: "chat"; id: string; name: string; format: "jsonl"; messageCount: number; bytes: number }
+    | {
+        type: "chat";
+        id: string;
+        name: string;
+        format: "native";
+        messageCount: number;
+        characterCount: number;
+        bytes: number;
+      }
     | { type: "character"; id: string; name: string; format: "native"; bytes: number }
   >;
   totalBytes: number;
@@ -32,6 +44,7 @@ export interface LanTransferPackage {
   manifest: LanTransferManifest;
   items: Array<
     | { type: "chat"; id: string; name: string; format: "jsonl"; content: string }
+    | { type: "chat"; id: string; name: string; format: "native"; chat: unknown; content?: any }
     | { type: "character"; id: string; name: string; format: "native"; envelope: unknown }
   >;
 }
@@ -93,4 +106,5 @@ export interface LanTransferImportSummary {
     characters: number;
   };
   skipped: Array<{ type: string; name?: string; reason: string }>;
+  characterIdMap?: Record<string, string>;
 }

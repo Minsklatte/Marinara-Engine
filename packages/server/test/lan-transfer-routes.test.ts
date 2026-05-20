@@ -18,7 +18,10 @@ import {
   hashLanTransferToken,
 } from "../src/services/lan-transfer/lan-transfer-crypto.js";
 import { lanTransferOfferStore } from "../src/services/lan-transfer/lan-transfer-offer-store.js";
-import { serializeLanTransferPayload } from "../src/services/lan-transfer/lan-transfer-payload.js";
+import {
+  parseLanTransferPayload,
+  serializeLanTransferPayload,
+} from "../src/services/lan-transfer/lan-transfer-payload.js";
 
 type EnvPatch = Record<string, string | undefined>;
 
@@ -223,6 +226,58 @@ test("preview fetches a sender manifest from a validated loopback origin", async
       expiresAt: testManifest.expiresAt,
       manifest: testManifest,
     });
+  }));
+
+test("preview accepts phase-2 payloads with multiple LAN origins", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const offerId = "route-preview-multi-origin";
+    const downloadToken = "download-token";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: testManifest,
+      encryptedPackage: testEncryptedPackage,
+    });
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: `http://127.0.0.1:${address.port}`,
+      origins: [
+        ` http://127.0.0.1:${address.port} `,
+        "http://8.8.8.8:7860",
+        `http://127.0.0.1:${address.port}`,
+        "http://192.168.1.25:7860",
+        "http://10.0.0.5:7860",
+        "http://172.16.0.5:7860",
+      ],
+      offerId,
+      downloadToken,
+      secret: "secret",
+    });
+    assert.deepEqual(parseLanTransferPayload(transferPayload)?.origins, [
+      `http://127.0.0.1:${address.port}`,
+      "http://8.8.8.8:7860",
+      "http://192.168.1.25:7860",
+      "http://10.0.0.5:7860",
+      "http://172.16.0.5:7860",
+    ]);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/preview",
+      payload: { transferPayload },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(JSON.parse(response.body).from, `http://127.0.0.1:${address.port}`);
   }));
 
 test("preview fetch uses the validated sender address after DNS rebinding", async () =>

@@ -21,7 +21,7 @@ export function parseLanTransferPayload(raw: string): LanTransferPayload | null 
     return null;
   }
 
-  const { type, version, from, offerId, downloadToken, secret } = parsed;
+  const { type, version, from, origins, offerId, downloadToken, secret } = parsed;
 
   if (
     type !== LAN_TRANSFER_TYPE ||
@@ -35,7 +35,7 @@ export function parseLanTransferPayload(raw: string): LanTransferPayload | null 
     return null;
   }
 
-  return { type, version, from, offerId, downloadToken, secret };
+  return { type, version, from, origins: normalizeOrigins(origins, from), offerId, downloadToken, secret };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -44,6 +44,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function normalizeOrigins(value: unknown, fallback: string): string[] | undefined {
+  if (!Array.isArray(value)) return fallback ? [fallback] : undefined;
+  const origins = value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  const deduped = Array.from(new Set(origins.map((entry) => entry.trim()))).slice(0, 5);
+  return deduped.length > 0 ? deduped : fallback ? [fallback] : undefined;
 }
 
 function isOriginOnlyHttpUrl(value: string): boolean {
