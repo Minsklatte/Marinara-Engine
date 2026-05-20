@@ -4,6 +4,7 @@ import { Agent, request as undiciRequest } from "undici";
 import type {
   LanTransferEncryptedPackage,
   LanTransferItemRequest,
+  LanTransferManifest,
   LanTransferManifestRequest,
   LanTransferPayload,
 } from "@marinara-engine/shared";
@@ -25,6 +26,7 @@ import {
   LAN_TRANSFER_PACKAGE_MAX_BYTES,
   validateLanTransferPackage,
 } from "../services/lan-transfer/lan-transfer-package.js";
+import { analyzeLanTransferManifest } from "../services/lan-transfer/lan-transfer-smart-import.js";
 import {
   parseLanTransferPayload,
   serializeLanTransferPayload,
@@ -152,6 +154,7 @@ export async function lanTransferRoutes(app: FastifyInstance) {
         offerId: result.value.offerId,
         expiresAt: result.value.expiresAt,
         manifest: result.value.manifest,
+        analysis: await analyzeLanTransferManifest(app, result.value.manifest as LanTransferManifest),
       });
     } catch (err) {
       return reply.code(getLanTransferFetchStatusCode(err)).send({ error: getErrorMessage(err) });
@@ -172,7 +175,9 @@ export async function lanTransferRoutes(app: FastifyInstance) {
       const validation = validateLanTransferPackage(parsedPackage);
       if (!validation.ok) return reply.code(400).send({ error: validation.error });
 
-      const summary = await importLanTransferPackage(app, validation.package);
+      const summary = await importLanTransferPackage(app, validation.package, {
+        importMode: getImportMode(request.body),
+      });
       return reply.send(summary);
     } catch (err) {
       return reply.code(getLanTransferFetchStatusCode(err)).send({ error: getErrorMessage(err) });
@@ -203,6 +208,12 @@ function getTransferPayload(value: unknown): { ok: true; payload: LanTransferPay
   if (!payload) return { ok: false, error: "Invalid LAN transfer payload" };
 
   return { ok: true, payload };
+}
+
+function getImportMode(value: unknown): "smart" | "copy" {
+  const body = readBody(value);
+  const options = isRecord(body.options) ? body.options : {};
+  return options.importMode === "copy" ? "copy" : "smart";
 }
 
 function getRequestOrigin(request: FastifyRequest): string {

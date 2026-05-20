@@ -17,6 +17,7 @@ import {
   encryptLanTransferPackage,
   hashLanTransferToken,
 } from "../src/services/lan-transfer/lan-transfer-crypto.js";
+import { buildLanTransferPackage } from "../src/services/lan-transfer/lan-transfer-package.js";
 import { lanTransferOfferStore } from "../src/services/lan-transfer/lan-transfer-offer-store.js";
 import {
   parseLanTransferPayload,
@@ -24,6 +25,7 @@ import {
 } from "../src/services/lan-transfer/lan-transfer-payload.js";
 import { basicAuthHook } from "../src/middleware/basic-auth.js";
 import { createCharactersStorage } from "../src/services/storage/characters.storage.js";
+import { createChatsStorage } from "../src/services/storage/chats.storage.js";
 
 type EnvPatch = Record<string, string | undefined>;
 
@@ -492,6 +494,97 @@ test("preview fetches a sender manifest from a validated loopback origin", async
       offerId,
       expiresAt: testManifest.expiresAt,
       manifest: testManifest,
+      analysis: {
+        mode: "smart",
+        actions: [],
+      },
+    });
+  }));
+
+test("preview includes smart import analysis for native chat dependencies", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const characters = createCharactersStorage(app.db);
+    const chats = createChatsStorage(app.db);
+    const character = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(character?.id);
+
+    const existing = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "route-preview-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "assistant", characterId: character.id, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+
+    const source = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(source?.id);
+    await chats.patchMetadata(source.id, { lanTransfer: { syncId: "route-preview-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(source.id, [
+      { role: "assistant", characterId: character.id, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+      { role: "user", characterId: null, content: "Two", createdAt: "2026-05-20T12:01:00.000Z" },
+    ]);
+
+    const pkg = await buildLanTransferPackage(
+      app,
+      [{ type: "chat", id: source.id, format: "native" }],
+      "2999-05-19T00:10:00.000Z",
+    );
+    await chats.remove(source.id);
+
+    const offerId = "route-preview-native-analysis";
+    const downloadToken = "download-token";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: pkg.manifest,
+      encryptedPackage: testEncryptedPackage,
+    });
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: `http://127.0.0.1:${address.port}`,
+      offerId,
+      downloadToken,
+      secret: "secret",
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/preview",
+      payload: { transferPayload },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    const parsed = JSON.parse(response.body);
+    assert.deepEqual(parsed.analysis, {
+      mode: "smart",
+      actions: [
+        {
+          type: "character",
+          sourceId: character.id,
+          name: "Alicia",
+          action: "reuse",
+          targetId: character.id,
+          reason: "Exact matching native character already exists",
+        },
+        {
+          type: "chat",
+          sourceId: "route-preview-chat",
+          name: "Alicia thread",
+          action: "append",
+          targetId: existing.id,
+          messageCount: 2,
+          appendCount: 1,
+          linkedCharacterNames: ["Alicia"],
+          reason: "Existing synced chat is missing 1 newer message",
+        },
+      ],
     });
   }));
 
@@ -775,6 +868,10 @@ test("preview fetch uses the validated sender address after DNS rebinding", asyn
         offerId,
         expiresAt: testManifest.expiresAt,
         manifest: testManifest,
+        analysis: {
+          mode: "smart",
+          actions: [],
+        },
       });
       assert.equal(lookupCalls, 1);
     } finally {
@@ -824,6 +921,73 @@ test("import-from-offer downloads, decrypts, validates, and imports a remote pac
       skipped: [],
     });
     assert.equal(lanTransferOfferStore.get(offerId), null);
+  }));
+
+test("import-from-offer accepts copy import mode and preserves duplicate behavior", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const characters = createCharactersStorage(app.db);
+    const existing = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    const source = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(existing?.id);
+    assert.ok(source?.id);
+
+    const pkg = await buildLanTransferPackage(
+      app,
+      [{ type: "character", id: source.id }],
+      "2999-05-19T00:10:00.000Z",
+    );
+    await characters.remove(source.id);
+
+    const offerId = "route-import-copy-mode";
+    const downloadToken = "download-token";
+    const secret = "transfer-secret";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: pkg.manifest,
+      encryptedPackage: encryptLanTransferPackage(JSON.stringify(pkg), secret),
+    });
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: `http://127.0.0.1:${address.port}`,
+      offerId,
+      downloadToken,
+      secret,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/import-from-offer",
+      payload: { transferPayload, options: { importMode: "copy" } },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    const parsed = JSON.parse(response.body);
+    assert.equal(typeof parsed.characterIdMap[source.id], "string");
+    assert.notEqual(parsed.characterIdMap[source.id], existing.id);
+    assert.deepEqual(parsed, {
+      imported: {
+        chats: 0,
+        characters: 1,
+      },
+      copied: {
+        chats: 0,
+        characters: 1,
+      },
+      skipped: [],
+      characterIdMap: {
+        [source.id]: parsed.characterIdMap[source.id],
+      },
+    });
+    assert.equal((await characters.list()).length, 2);
   }));
 
 test("import-from-offer tries sender origins before download consumption", async () =>

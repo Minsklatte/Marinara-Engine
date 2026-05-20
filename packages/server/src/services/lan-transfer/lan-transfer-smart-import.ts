@@ -1,6 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
-import type { ExportEnvelope, LanTransferImportSummary, LanTransferPackage } from "@marinara-engine/shared";
+import type {
+  ExportEnvelope,
+  LanTransferImportSummary,
+  LanTransferManifest,
+  LanTransferPackage,
+  LanTransferPreviewAction,
+  LanTransferPreviewAnalysis,
+} from "@marinara-engine/shared";
 import { chats as chatsTable } from "../../db/schema/index.js";
 import { buildNativeCharacterEnvelope } from "../export/character-export.service.js";
 import { importMarinara } from "../import/marinara.importer.js";
@@ -37,6 +44,68 @@ export function createEmptyLanTransferImportSummary(): LanTransferImportSummary 
   };
 }
 
+export async function analyzeLanTransferManifest(
+  app: FastifyInstance,
+  manifest: LanTransferManifest,
+): Promise<LanTransferPreviewAnalysis> {
+  const actions: LanTransferPreviewAction[] = [];
+  const characterIdMap: Record<string, string> = {};
+  const manifestCharacterIds = new Set<string>();
+  const characterNames = new Map<string, string>();
+  const items = isRecord(manifest) && Array.isArray(manifest.items) ? manifest.items : [];
+
+  for (const item of items) {
+    if (item.type !== "character" || item.format !== "native") continue;
+    rememberManifestCharacter(item, manifestCharacterIds, characterNames);
+  }
+
+  for (const item of items) {
+    if (item.type === "character" && item.format === "native") {
+      const existingId = await findExactCharacterByFingerprint(app, item.fingerprint);
+      if (existingId) {
+        writePreviewCharacterIdMap(characterIdMap, item, existingId);
+        actions.push({
+          type: "character",
+          sourceId: item.id,
+          name: item.name,
+          action: "reuse",
+          targetId: existingId,
+          reason: "Exact matching native character already exists",
+        });
+      } else {
+        actions.push({
+          type: "character",
+          sourceId: item.id,
+          name: item.name,
+          action: "import-copy",
+          reason: item.fingerprint
+            ? "No exact matching native character was found"
+            : "Character fingerprint is missing; will import a copy",
+        });
+      }
+      continue;
+    }
+
+    if (item.type === "chat" && item.format === "native") {
+      actions.push(await analyzeNativeChatManifestItem(app, item, characterIdMap, manifestCharacterIds, characterNames));
+      continue;
+    }
+
+    if (item.type === "chat") {
+      actions.push({
+        type: "chat",
+        sourceId: item.id,
+        name: item.name,
+        action: "import-copy",
+        messageCount: item.messageCount,
+        reason: "Non-native chat transfers are imported as copies",
+      });
+    }
+  }
+
+  return { mode: "smart", actions };
+}
+
 export async function findExactCharacterByFingerprint(
   app: FastifyInstance,
   fingerprint: string | undefined,
@@ -57,6 +126,112 @@ export async function findExactCharacterByFingerprint(
     if (fingerprintNativeCharacterEnvelope(envelope) === fingerprint) return character.id;
   }
   return null;
+}
+
+async function analyzeNativeChatManifestItem(
+  app: FastifyInstance,
+  item: Extract<LanTransferManifest["items"][number], { type: "chat"; format: "native" }>,
+  characterIdMap: Record<string, string>,
+  manifestCharacterIds: Set<string>,
+  characterNames: Map<string, string>,
+): Promise<LanTransferPreviewAction> {
+  const linkedCharacterNames = readLinkedCharacterNames(item.characterIds, characterNames);
+  const base = {
+    type: "chat" as const,
+    sourceId: item.id,
+    name: item.name,
+    messageCount: item.messageCount,
+    linkedCharacterNames,
+  };
+
+  if (!item.syncId) {
+    return {
+      ...base,
+      action: "import-copy",
+      reason: "Chat sync metadata is missing; will import a copy",
+    };
+  }
+
+  const characterIds = Array.isArray(item.characterIds) ? item.characterIds : [];
+  const missingDependencies = characterIds.filter(
+    (characterId) => !characterIdMap[characterId] && !manifestCharacterIds.has(characterId),
+  );
+  if (missingDependencies.length > 0) {
+    return {
+      ...base,
+      action: "skip",
+      reason: `Missing character mapping for ${missingDependencies.join(", ")}`,
+    };
+  }
+
+  const existing = await findChatBySyncId(app, item.syncId);
+  if (!existing) {
+    return {
+      ...base,
+      action: "import-copy",
+      reason: "No existing synced chat was found",
+    };
+  }
+
+  if (!Array.isArray(item.messageFingerprints)) {
+    return {
+      ...base,
+      action: "conflict-copy",
+      targetId: existing.id,
+      reason: "Message fingerprints are missing; will import a conflict copy",
+    };
+  }
+
+  const missingLocalMappings = characterIds.filter((characterId) => !characterIdMap[characterId]);
+  if (missingLocalMappings.length > 0) {
+    return {
+      ...base,
+      action: "conflict-copy",
+      targetId: existing.id,
+      reason: `Existing chat found, but local character mapping is missing for ${missingLocalMappings.join(", ")}`,
+    };
+  }
+
+  const localFingerprints = await getLocalMessageFingerprints(
+    app,
+    existing.id,
+    buildPreviewNativeChat(item),
+    characterIdMap,
+  );
+  const comparison = compareFingerprintSequences(localFingerprints, item.messageFingerprints);
+  if (comparison.kind === "same") {
+    return {
+      ...base,
+      action: "skip",
+      targetId: existing.id,
+      reason: "Existing synced chat is already up to date",
+    };
+  }
+  if (comparison.kind === "local_ahead") {
+    return {
+      ...base,
+      action: "skip",
+      targetId: existing.id,
+      reason: "Existing synced chat already has newer local messages",
+    };
+  }
+  if (comparison.kind === "incoming_extends_local") {
+    const appendCount = item.messageFingerprints.length - comparison.appendFrom;
+    return {
+      ...base,
+      action: "append",
+      targetId: existing.id,
+      appendCount,
+      reason: `Existing synced chat is missing ${appendCount} newer ${appendCount === 1 ? "message" : "messages"}`,
+    };
+  }
+
+  return {
+    ...base,
+    action: "conflict-copy",
+    targetId: existing.id,
+    reason: "Existing synced chat history differs; will import a conflict copy",
+  };
 }
 
 export async function importLanTransferCharacters(
@@ -209,6 +384,53 @@ function writeCharacterIdMap(
 ) {
   characterIdMap[item.id] = localId;
   if (item.syncId) characterIdMap[item.syncId] = localId;
+}
+
+function writePreviewCharacterIdMap(
+  characterIdMap: Record<string, string>,
+  item: Extract<LanTransferManifest["items"][number], { type: "character"; format: "native" }>,
+  localId: string,
+) {
+  characterIdMap[item.id] = localId;
+  if (item.syncId) characterIdMap[item.syncId] = localId;
+}
+
+function rememberManifestCharacter(
+  item: Extract<LanTransferManifest["items"][number], { type: "character"; format: "native" }>,
+  characterIds: Set<string>,
+  characterNames: Map<string, string>,
+) {
+  characterIds.add(item.id);
+  characterNames.set(item.id, item.name);
+  if (item.syncId) {
+    characterIds.add(item.syncId);
+    characterNames.set(item.syncId, item.name);
+  }
+}
+
+function readLinkedCharacterNames(value: unknown, characterNames: Map<string, string>): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = value
+    .map((id) => (typeof id === "string" ? (characterNames.get(id) ?? id) : null))
+    .filter((name): name is string => typeof name === "string" && name.length > 0);
+  return names.length > 0 ? [...new Set(names)] : undefined;
+}
+
+function buildPreviewNativeChat(
+  item: Extract<LanTransferManifest["items"][number], { type: "chat"; format: "native" }>,
+): NativeLanChatExport {
+  return {
+    type: "marinara_lan_chat",
+    version: 1,
+    chat: {
+      id: item.syncId ?? item.id,
+      syncId: item.syncId ?? item.id,
+      name: item.name,
+      mode: "roleplay",
+      characterIds: Array.isArray(item.characterIds) ? item.characterIds : [],
+    },
+    messages: [],
+  };
 }
 
 async function importNativeChatSmart(
