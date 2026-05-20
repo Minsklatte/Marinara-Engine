@@ -19,6 +19,7 @@ test("serializes and parses a valid LAN transfer payload", () => {
     type: "marinara-lan-transfer",
     version: 1,
     from: "http://192.168.1.50:7860",
+    origins: ["http://192.168.1.50:7860"],
     offerId: "offer_123",
     downloadToken: "download-token",
     secret: "secret-key",
