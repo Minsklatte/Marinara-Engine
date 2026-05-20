@@ -155,6 +155,27 @@ test("origin helper ranks public configured origin before loopback request origi
   ]);
 });
 
+test("origin helper preserves request origin under the candidate cap", async () => {
+  const { resolveLanTransferOrigins } = await import("../src/services/lan-transfer/lan-transfer-origins.js");
+  const origins = resolveLanTransferOrigins({
+    protocol: "http",
+    requestHost: "localhost:7860",
+    configuredOrigin: "http://192.168.1.230:7860",
+    interfaceAddresses: [
+      "192.168.1.230",
+      "10.12.42.103",
+      "10.12.42.104",
+      "10.12.42.105",
+      "10.12.42.106",
+    ],
+    port: 7860,
+  });
+
+  assert.equal(origins.length, 5);
+  assert.equal(origins[0], "http://192.168.1.230:7860");
+  assert.equal(origins.at(-1), "http://localhost:7860");
+});
+
 test("create offer advertises configured public origin first", async () =>
   withLanTransferApp(
     {

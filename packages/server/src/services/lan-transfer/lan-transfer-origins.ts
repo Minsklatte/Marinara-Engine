@@ -25,11 +25,16 @@ export function resolveLanTransferOrigins(input: ResolveLanTransferOriginsInput)
   for (const address of input.interfaceAddresses ?? getPrivateIpv4InterfaceAddresses()) {
     candidates.push(`${input.protocol}://${address}:${input.port}`);
   }
-  candidates.push(`${input.protocol}://${input.requestHost}`);
-  return Array.from(new Set(candidates.map(normalizeOrigin).filter((origin): origin is string => !!origin))).slice(
-    0,
-    5,
-  );
+  const requestOrigin = normalizeOrigin(`${input.protocol}://${input.requestHost}`);
+  if (requestOrigin) candidates.push(requestOrigin);
+
+  const origins = Array.from(new Set(candidates.map(normalizeOrigin).filter((origin): origin is string => !!origin)));
+  const requestOriginIndex = requestOrigin ? origins.indexOf(requestOrigin) : -1;
+  if (origins.length <= 5 || requestOriginIndex === -1 || requestOriginIndex < 5) {
+    return origins.slice(0, 5);
+  }
+
+  return [...origins.slice(0, 4), requestOrigin];
 }
 
 function normalizeOrigin(value: string): string | null {
