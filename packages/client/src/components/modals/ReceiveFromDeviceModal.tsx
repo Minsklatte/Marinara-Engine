@@ -1,8 +1,12 @@
 // Modal: Receive chats and characters from another LAN device
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Eye, Loader2, TriangleAlert, Wifi } from "lucide-react";
 import { toast } from "sonner";
-import type { LanTransferImportSummary, LanTransferPreviewResponse } from "@marinara-engine/shared";
+import type {
+  LanTransferImportSummary,
+  LanTransferPreviewAction,
+  LanTransferPreviewResponse,
+} from "@marinara-engine/shared";
 import { useImportLanTransferFromOffer, usePreviewLanTransfer } from "../../hooks/use-lan-transfer";
 import { Modal } from "../ui/Modal";
 
@@ -25,26 +29,150 @@ function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.every(isNonEmptyString) ? value : undefined;
+}
+
 function getBundledCharacterCount(item: PreviewManifestItem) {
   return item.type === "chat" && item.format === "native" && item.characterCount > 0 ? item.characterCount : 0;
 }
 
-function getItemTypeLabel(item: PreviewManifestItem) {
-  if (item.type === "character") return "Character";
+function getLinkedCharacterNames(item: PreviewManifestItem, action?: LanTransferPreviewAction) {
+  if (action?.type === "chat" && action.sourceId === item.id && action.linkedCharacterNames?.length) {
+    return action.linkedCharacterNames;
+  }
+
+  return undefined;
+}
+
+function getItemTypeLabel(item: PreviewManifestItem, action?: LanTransferPreviewAction) {
+  if (item.type === "character") return "Character card";
+  if (item.format !== "native") return "Chat";
+
+  const linkedCharacterNames = getLinkedCharacterNames(item, action);
+  if (linkedCharacterNames?.length === 1) return `1 chat linked to ${linkedCharacterNames[0]}`;
 
   const bundledCharacters = getBundledCharacterCount(item);
-  return bundledCharacters > 0 ? `Chat + ${pluralize(bundledCharacters, "card")}` : "Chat";
+  if (bundledCharacters > 1 || (linkedCharacterNames && linkedCharacterNames.length > 1)) {
+    return `1 chat linked to ${pluralize(linkedCharacterNames?.length ?? bundledCharacters, "card")}`;
+  }
+
+  if (bundledCharacters === 1) return "1 chat linked to 1 card";
+  return "1 chat";
+}
+
+function getActionLabel(action?: LanTransferPreviewAction) {
+  if (!action) return null;
+
+  if (action.type === "character") {
+    return action.action === "reuse" ? "Will reuse existing card" : "Will import card";
+  }
+
+  if (action.action === "skip") return "Already up to date";
+  if (action.action === "append") return `Will append ${pluralize(action.appendCount ?? 0, "message")}`;
+  if (action.action === "conflict-copy") return "History differs; will import a copy";
+  return "Will import a copy";
+}
+
+function getActionKey(action: LanTransferPreviewAction) {
+  return `${action.type}:${action.sourceId}`;
+}
+
+function pushCountPart(parts: string[], count: number | undefined, singular: string, plural?: string) {
+  if (typeof count === "number" && count > 0) parts.push(pluralize(count, singular, plural));
+}
+
+function joinCountParts(parts: string[]) {
+  if (parts.length <= 1) return parts.join("");
+  return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 }
 
 function getImportSummary(summary: LanTransferImportSummary) {
-  const parts: string[] = [];
-  const { chats, characters } = summary.imported;
+  const sentences: string[] = [];
+  const importedParts: string[] = [];
+  const reusedParts: string[] = [];
+  const copiedParts: string[] = [];
 
-  if (chats > 0) parts.push(`${chats} ${chats === 1 ? "chat" : "chats"}`);
-  if (characters > 0) parts.push(`${characters} ${characters === 1 ? "character" : "characters"}`);
+  pushCountPart(importedParts, summary.imported.chats, "chat");
+  pushCountPart(importedParts, summary.imported.characters, "character");
+  pushCountPart(reusedParts, summary.reused?.chats, "chat");
+  pushCountPart(reusedParts, summary.reused?.characters, "card");
+  pushCountPart(copiedParts, summary.copied?.chats, "chat");
+  pushCountPart(copiedParts, summary.copied?.characters, "card");
 
-  const imported = parts.length > 0 ? parts.join(" and ") : "0 items";
-  return summary.skipped.length > 0 ? `Imported ${imported}; skipped ${summary.skipped.length}.` : `Imported ${imported}.`;
+  sentences.push(`Imported ${importedParts.length > 0 ? joinCountParts(importedParts) : "0 items"}`);
+  if (reusedParts.length > 0) sentences.push(`reused ${joinCountParts(reusedParts)}`);
+  if (summary.appended && summary.appended.messages > 0) {
+    sentences.push(
+      `appended ${pluralize(summary.appended.messages, "message")} to ${pluralize(summary.appended.chats, "chat")}`,
+    );
+  }
+  if (copiedParts.length > 0) sentences.push(`copied ${joinCountParts(copiedParts)}`);
+  if (summary.skipped.length > 0) sentences.push(`skipped ${summary.skipped.length}`);
+
+  return `${sentences.join("; ")}.`;
+}
+
+function normalizePreviewAction(value: unknown): LanTransferPreviewAction | null {
+  if (!isRecord(value)) return null;
+
+  const { type, sourceId, name, action, targetId, reason } = value;
+  if (!isNonEmptyString(type) || !isNonEmptyString(sourceId) || !isNonEmptyString(name) || !isNonEmptyString(reason)) {
+    return null;
+  }
+  const target = isNonEmptyString(targetId) ? { targetId } : {};
+
+  if (type === "character") {
+    if (action !== "reuse" && action !== "import-copy") return null;
+    return { type: "character", sourceId, name, action, ...target, reason };
+  }
+
+  if (type === "chat") {
+    if (action !== "skip" && action !== "append" && action !== "import-copy" && action !== "conflict-copy") return null;
+    if (typeof value.messageCount !== "number" || !Number.isFinite(value.messageCount)) return null;
+    if (
+      action === "append" &&
+      (typeof value.appendCount !== "number" || !Number.isFinite(value.appendCount) || value.appendCount < 0)
+    ) {
+      return null;
+    }
+    const appendCount =
+      typeof value.appendCount === "number" && Number.isFinite(value.appendCount)
+        ? { appendCount: value.appendCount }
+        : {};
+    const linkedCharacterNames = readStringArray(value.linkedCharacterNames);
+    return {
+      type: "chat",
+      sourceId,
+      name,
+      action,
+      ...target,
+      messageCount: value.messageCount,
+      ...appendCount,
+      ...(linkedCharacterNames ? { linkedCharacterNames } : {}),
+      reason,
+    };
+  }
+
+  return null;
+}
+
+function normalizePreviewAnalysis(value: unknown): LanTransferPreviewResponse["analysis"] {
+  if (!isRecord(value) || value.mode !== "smart" || !Array.isArray(value.actions)) return undefined;
+
+  const actions: LanTransferPreviewAction[] = [];
+  for (const action of value.actions) {
+    const normalizedAction = normalizePreviewAction(action);
+    if (!normalizedAction) return undefined;
+    actions.push(normalizedAction);
+  }
+
+  return { mode: "smart", actions };
 }
 
 function normalizePreviewResponse(value: unknown): LanTransferPreviewResponse | null {
@@ -83,13 +211,23 @@ function normalizePreviewResponse(value: unknown): LanTransferPreviewResponse | 
 
       if (format === "native") {
         if (typeof item.characterCount !== "number" || !Number.isFinite(item.characterCount)) return null;
+        const syncId = isNonEmptyString(item.syncId) ? { syncId: item.syncId } : {};
+        const characterIds = readStringArray(item.characterIds);
+        const messageFingerprint = isNonEmptyString(item.messageFingerprint)
+          ? { messageFingerprint: item.messageFingerprint }
+          : {};
+        const messageFingerprints = readStringArray(item.messageFingerprints);
         items.push({
           type: "chat",
           id,
+          ...syncId,
           name,
           format: "native",
           messageCount: item.messageCount,
           characterCount: item.characterCount,
+          ...(characterIds ? { characterIds } : {}),
+          ...messageFingerprint,
+          ...(messageFingerprints ? { messageFingerprints } : {}),
           bytes,
         });
         continue;
@@ -100,12 +238,16 @@ function normalizePreviewResponse(value: unknown): LanTransferPreviewResponse | 
 
     if (type === "character") {
       if (format !== "native") return null;
-      items.push({ type: "character", id, name, format: "native", bytes });
+      const syncId = isNonEmptyString(item.syncId) ? { syncId: item.syncId } : {};
+      const fingerprint = isNonEmptyString(item.fingerprint) ? { fingerprint: item.fingerprint } : {};
+      items.push({ type: "character", id, ...syncId, name, format: "native", ...fingerprint, bytes });
       continue;
     }
 
     return null;
   }
+
+  const analysis = normalizePreviewAnalysis(value.analysis);
 
   return {
     from,
@@ -120,6 +262,7 @@ function normalizePreviewResponse(value: unknown): LanTransferPreviewResponse | 
       items,
       totalBytes: manifest.totalBytes,
     },
+    ...(analysis ? { analysis } : {}),
   };
 }
 
@@ -129,6 +272,7 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
   const [transferPayload, setTransferPayload] = useState("");
   const [preview, setPreview] = useState<LanTransferPreviewResponse | null>(null);
   const [previewedPayload, setPreviewedPayload] = useState<string | null>(null);
+  const [importAsCopies, setImportAsCopies] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const currentTrimmedPayloadRef = useRef("");
@@ -144,6 +288,10 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
     localError ??
     (previewTransfer.error ? getErrorMessage(previewTransfer.error, "Could not preview this transfer payload.") : null) ??
     (importTransfer.error ? getErrorMessage(importTransfer.error, "Could not import this transfer payload.") : null);
+
+  useEffect(() => {
+    if (open) setImportAsCopies(false);
+  }, [open]);
 
   const previewSummary = useMemo(() => {
     if (!preview) return null;
@@ -238,18 +386,27 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
     setStatusMessage(null);
 
     try {
-      const summary = await importTransfer.mutateAsync({ transferPayload: payload });
+      const summary = await importTransfer.mutateAsync({
+        transferPayload: payload,
+        options: { importMode: importAsCopies ? "copy" : "smart" },
+      });
       toast.success(getImportSummary(summary));
       onClose();
     } catch {
       setStatusMessage(null);
     }
-  }, [importTransfer, onClose, previewedPayload, transferPayload]);
+  }, [importAsCopies, importTransfer, onClose, previewedPayload, transferPayload]);
 
   const handleClose = useCallback(() => {
     if (importTransfer.isPending) return;
     onClose();
   }, [importTransfer.isPending, onClose]);
+
+  const actionByItemKey = useMemo(() => {
+    const actions = preview?.analysis?.actions;
+    if (!actions) return new Map<string, LanTransferPreviewAction>();
+    return new Map(actions.map((action) => [getActionKey(action), action]));
+  }, [preview?.analysis?.actions]);
 
   return (
     <Modal open={open} onClose={handleClose} title="Receive from Device" width="max-w-2xl">
@@ -328,40 +485,64 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
             </div>
 
             <div className="max-h-64 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--background)]">
-              {preview.manifest.items.map((item) => (
-                <div
-                  key={`${item.type}:${item.id}`}
-                  className="flex items-center justify-between gap-3 border-b border-[var(--border)]/60 px-3 py-2 last:border-b-0"
-                >
-                  <span className="min-w-0 truncate text-sm font-medium text-[var(--foreground)]">{item.name}</span>
-                  <span className="shrink-0 rounded-md bg-[var(--muted)] px-2 py-1 text-xs font-semibold text-[var(--muted-foreground)]">
-                    {getItemTypeLabel(item)}
-                  </span>
-                </div>
-              ))}
+              {preview.manifest.items.map((item) => {
+                const action = actionByItemKey.get(`${item.type}:${item.id}`);
+                const actionLabel = getActionLabel(action);
+
+                return (
+                  <div
+                    key={`${item.type}:${item.id}`}
+                    className="flex items-center justify-between gap-3 border-b border-[var(--border)]/60 px-3 py-2 last:border-b-0 max-sm:flex-col max-sm:items-start"
+                  >
+                    <span className="min-w-0 truncate text-sm font-medium text-[var(--foreground)]">{item.name}</span>
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start">
+                      <span className="rounded-md bg-[var(--muted)] px-2 py-1 text-xs font-semibold text-[var(--muted-foreground)]">
+                        {getItemTypeLabel(item, action)}
+                      </span>
+                      {actionLabel && (
+                        <span className="rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 px-2 py-1 text-xs font-semibold text-[var(--foreground)]">
+                          {actionLabel}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
 
-        <div className="flex flex-wrap justify-end gap-2 pt-1">
-          <button
-            type="button"
-            onClick={() => void handlePreview()}
-            disabled={!canPreview}
-            className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 py-2 text-sm font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {previewTransfer.isPending ? <Loader2 className="animate-spin" size="1rem" /> : <Eye size="1rem" />}
-            Preview
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleImport()}
-            disabled={!canImport}
-            className="inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {importTransfer.isPending ? <Loader2 className="animate-spin" size="1rem" /> : <Download size="1rem" />}
-            Import
-          </button>
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-[var(--foreground)]">
+            <input
+              type="checkbox"
+              checked={importAsCopies}
+              onChange={(event) => setImportAsCopies(event.target.checked)}
+              disabled={isImporting}
+              className="h-4 w-4 rounded border-[var(--border)] accent-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-60"
+            />
+            Import as copies
+          </label>
+          <div className="flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => void handlePreview()}
+              disabled={!canPreview}
+              className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 py-2 text-sm font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {previewTransfer.isPending ? <Loader2 className="animate-spin" size="1rem" /> : <Eye size="1rem" />}
+              Preview
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleImport()}
+              disabled={!canImport}
+              className="inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {importTransfer.isPending ? <Loader2 className="animate-spin" size="1rem" /> : <Download size="1rem" />}
+              Import
+            </button>
+          </div>
         </div>
       </div>
     </Modal>
