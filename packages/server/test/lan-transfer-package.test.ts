@@ -367,6 +367,76 @@ test("accepts a native chat package item with matching manifest bytes", () => {
   assert.equal(result.ok, true);
 });
 
+test("accepts legacy native chat packages without smart metadata", async () =>
+  withDb(async (db) => {
+    const message = {
+      role: "assistant",
+      characterId: null,
+      content: "Legacy hello",
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const chat = {
+      type: "marinara_lan_chat",
+      version: 1,
+      chat: {
+        id: "legacy-chat",
+        name: "Legacy chat",
+        mode: "roleplay",
+      },
+      messages: [message],
+    };
+    const bytes = Buffer.byteLength(JSON.stringify(chat), "utf8");
+    const pkg = {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            type: "chat",
+            id: "legacy-chat",
+            name: "Legacy chat",
+            format: "native",
+            messageCount: 1,
+            characterCount: 0,
+            bytes,
+          },
+        ],
+        totalBytes: bytes,
+      },
+      items: [
+        {
+          type: "chat",
+          id: "legacy-chat",
+          name: "Legacy chat",
+          format: "native",
+          chat,
+        },
+      ],
+    };
+
+    const validation = validateLanTransferPackage(pkg, { now: () => NOW });
+    assert.equal(validation.ok, true);
+
+    const summary = await importLanTransferPackage({ db } as any, validation.ok ? validation.package : (pkg as any));
+
+    assert.equal(summary.imported.chats, 1);
+    assert.equal(summary.copied?.chats, 1);
+    assert.equal(summary.reused, undefined);
+    assert.deepEqual(summary.skipped, []);
+    const chats = createChatsStorage(db);
+    const imported = (await chats.list()).find((candidate) => candidate.name === "Legacy chat");
+    assert.ok(imported);
+    assert.deepEqual(JSON.parse(imported.characterIds as string), []);
+    assert.deepEqual(
+      (await chats.listMessages(imported.id)).map((candidate) => candidate.content),
+      ["Legacy hello"],
+    );
+  }));
+
 test("rejects native chat package when wrapper identity differs from embedded chat", () => {
   for (const wrapper of [
     { id: "chat-2", name: "Chat" },
@@ -743,6 +813,60 @@ test("accepts a valid native character envelope", () => {
 
   assert.equal(result.ok, true);
 });
+
+test("accepts and imports legacy native character packages without smart metadata as copies", async () =>
+  withDb(async (db) => {
+    const envelope = {
+      type: "marinara_character",
+      version: 1,
+      data: {
+        spec: "chara_card_v2",
+        spec_version: "2.0",
+        data: { name: "Legacy Character" },
+      },
+    };
+    const bytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+    const pkg = {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            type: "character",
+            id: "legacy-character",
+            name: "Legacy Character",
+            format: "native",
+            bytes,
+          },
+        ],
+        totalBytes: bytes,
+      },
+      items: [
+        {
+          type: "character",
+          id: "legacy-character",
+          name: "Legacy Character",
+          format: "native",
+          envelope,
+        },
+      ],
+    };
+
+    const validation = validateLanTransferPackage(pkg, { now: () => NOW });
+    assert.equal(validation.ok, true);
+
+    const summary = await importLanTransferPackage({ db } as any, validation.ok ? validation.package : (pkg as any));
+
+    assert.equal(summary.imported.characters, 1);
+    assert.equal(summary.copied?.characters, 1);
+    assert.equal(summary.reused, undefined);
+    assert.deepEqual(summary.skipped, []);
+    assert.equal((await createCharactersStorage(db).list()).length, 1);
+  }));
 
 test("rejects forged native character sync metadata", () => {
   const { envelope, fingerprint, bytes } = buildNativeCharacterFixture();

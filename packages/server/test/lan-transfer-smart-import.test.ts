@@ -432,6 +432,47 @@ test("smart import copies divergent synced chats instead of silently merging", a
     assert.equal((await chats.list()).length, 2);
   }));
 
+test("smart import reuses an identical divergent conflict copy on repeated import", async () =>
+  withDb(async (db) => {
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const character = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(character?.id);
+    const existing = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "assistant", characterId: character.id, content: "Local branch", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+
+    const source = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(source?.id);
+    await chats.patchMetadata(source.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(source.id, [
+      { role: "assistant", characterId: character.id, content: "Remote branch", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+    const pkg = await buildLanTransferPackage(
+      { db } as any,
+      [{ type: "chat", id: source.id, format: "native" }],
+      "2999-01-01T00:00:00.000Z",
+    );
+    await chats.remove(source.id);
+
+    const first = await importLanTransferPackage({ db } as any, pkg, { importMode: "smart" });
+    const second = await importLanTransferPackage({ db } as any, pkg, { importMode: "smart" });
+
+    assert.equal(first.copied?.chats, 1);
+    assert.equal(second.reused?.chats, 1);
+    assert.equal(second.copied, undefined);
+    assert.deepEqual(second.skipped, []);
+    assert.equal((await chats.list()).length, 2);
+    const conflictCopy = (await chats.list()).find((candidate) => candidate.name === "Alicia thread (LAN conflict copy)");
+    assert.ok(conflictCopy);
+    const metadata = JSON.parse(conflictCopy.metadata as string);
+    assert.equal(metadata.lanTransfer.conflict.syncId, "source-chat");
+    assert.equal(typeof metadata.lanTransfer.conflict.messageFingerprint, "string");
+  }));
+
 test("smart import fallback fingerprints use synced character IDs for existing local messages", async () =>
   withDb(async (db) => {
     const characters = createCharactersStorage(db);
@@ -559,6 +600,56 @@ test("smart import fallback fingerprints use package character IDs when reused l
       (await chats.listMessages(existing.id)).map((message) => message.content),
       ["One", "Two"],
     );
+  }));
+
+test("preview analysis appends when a required bundled character will be imported first", async () =>
+  withDb(async (db) => {
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const sourceCharacter = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(sourceCharacter?.id);
+    const existing = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [] });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "user", characterId: null, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+
+    const source = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [sourceCharacter.id] });
+    assert.ok(source?.id);
+    await chats.patchMetadata(source.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(source.id, [
+      { role: "user", characterId: null, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+      {
+        role: "assistant",
+        characterId: sourceCharacter.id,
+        content: "Two",
+        createdAt: "2026-05-20T12:01:00.000Z",
+      },
+    ]);
+    const pkg = await buildLanTransferPackage(
+      { db } as any,
+      [{ type: "chat", id: source.id, format: "native" }],
+      "2999-01-01T00:00:00.000Z",
+    );
+    await chats.remove(source.id);
+    await characters.remove(sourceCharacter.id);
+
+    const analysis = await analyzeLanTransferManifest({ db } as any, pkg.manifest);
+
+    assert.equal(analysis.actions[0]?.type, "character");
+    assert.equal(analysis.actions[0]?.action, "import-copy");
+    assert.deepEqual(analysis.actions[1], {
+      type: "chat",
+      sourceId: "source-chat",
+      name: "Alicia thread",
+      action: "append",
+      targetId: existing.id,
+      messageCount: 2,
+      appendCount: 1,
+      linkedCharacterNames: ["Alicia"],
+      reason: "Existing synced chat is missing 1 newer message",
+    });
   }));
 
 test("smart import append does not move existing chat updatedAt backwards", async () =>

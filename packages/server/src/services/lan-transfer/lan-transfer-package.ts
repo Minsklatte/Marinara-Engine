@@ -336,16 +336,16 @@ function validateManifestItem(item: unknown): { ok: true } | { ok: false; error:
       return { ok: false, error: "Native chat manifest item characterCount must be a non-negative integer" };
     }
     if (item.format === "native") {
-      if (!isNonEmptyString(item.syncId)) {
+      if (item.syncId !== undefined && !isNonEmptyString(item.syncId)) {
         return { ok: false, error: "Native chat manifest item syncId must be a non-empty string" };
       }
-      if (!isArrayOfNonEmptyStrings(item.characterIds)) {
+      if (item.characterIds !== undefined && !isArrayOfNonEmptyStrings(item.characterIds)) {
         return { ok: false, error: "Native chat manifest item characterIds must be non-empty strings" };
       }
-      if (!isNonEmptyString(item.messageFingerprint)) {
+      if (item.messageFingerprint !== undefined && !isNonEmptyString(item.messageFingerprint)) {
         return { ok: false, error: "Native chat manifest item messageFingerprint must be a non-empty string" };
       }
-      if (!isArrayOfNonEmptyStrings(item.messageFingerprints)) {
+      if (item.messageFingerprints !== undefined && !isArrayOfNonEmptyStrings(item.messageFingerprints)) {
         return { ok: false, error: "Native chat manifest item messageFingerprints must be non-empty strings" };
       }
     }
@@ -354,10 +354,10 @@ function validateManifestItem(item: unknown): { ok: true } | { ok: false; error:
 
   if (item.type === "character") {
     if (item.format !== "native") return { ok: false, error: "Character manifest item must use native format" };
-    if (!isNonEmptyString(item.syncId)) {
+    if (item.syncId !== undefined && !isNonEmptyString(item.syncId)) {
       return { ok: false, error: "Character manifest item syncId must be a non-empty string" };
     }
-    if (!isNonEmptyString(item.fingerprint)) {
+    if (item.fingerprint !== undefined && !isNonEmptyString(item.fingerprint)) {
       return { ok: false, error: "Character manifest item fingerprint must be a non-empty string" };
     }
     return { ok: true };
@@ -381,7 +381,7 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
       return { ok: true };
     }
     if (item.format === "native") {
-      if (!isNonEmptyString(item.syncId)) {
+      if (item.syncId !== undefined && !isNonEmptyString(item.syncId)) {
         return { ok: false, error: "Native chat package item syncId must be a non-empty string" };
       }
       if (!Object.prototype.hasOwnProperty.call(item, "chat")) {
@@ -389,11 +389,8 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
       }
       const validation = validateNativeLanChatExport(item.chat);
       if (!validation.ok) return validation;
-      if (
-        item.id !== validation.chat.chat.syncId ||
-        item.syncId !== validation.chat.chat.syncId ||
-        item.name !== validation.chat.chat.name
-      ) {
+      const expectedId = item.syncId ? validation.chat.chat.syncId : validation.chat.chat.id;
+      if (item.id !== expectedId || (item.syncId !== undefined && item.syncId !== expectedId) || item.name !== validation.chat.chat.name) {
         return { ok: false, error: "Native chat package item must match embedded chat identity" };
       }
       return { ok: true };
@@ -403,19 +400,19 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
 
   if (item.type === "character") {
     if (item.format !== "native") return { ok: false, error: "Character package item must use native format" };
-    if (!isNonEmptyString(item.syncId)) {
+    if (item.syncId !== undefined && !isNonEmptyString(item.syncId)) {
       return { ok: false, error: "Character package item syncId must be a non-empty string" };
     }
-    if (!isNonEmptyString(item.fingerprint)) {
+    if (item.fingerprint !== undefined && !isNonEmptyString(item.fingerprint)) {
       return { ok: false, error: "Character package item fingerprint must be a non-empty string" };
     }
     if (!isNativeCharacterEnvelope(item.envelope)) {
       return { ok: false, error: "Character package item envelope must be a native character envelope" };
     }
-    if (item.id !== item.syncId || readLanTransferSyncId(item.envelope) !== item.syncId) {
+    if (item.syncId !== undefined && (item.id !== item.syncId || readLanTransferSyncId(item.envelope) !== item.syncId)) {
       return { ok: false, error: "Character package item must match sync identity" };
     }
-    if (fingerprintNativeCharacterEnvelope(item.envelope) !== item.fingerprint) {
+    if (item.fingerprint !== undefined && fingerprintNativeCharacterEnvelope(item.envelope) !== item.fingerprint) {
       return { ok: false, error: "Character fingerprint mismatch" };
     }
     return { ok: true };
@@ -483,27 +480,43 @@ function validateManifestItemMatchesPackageItem(
     if (manifestItem.characterCount !== collectNativeLanChatCharacterIds(validation.chat).length) {
       return { ok: false, error: "Native chat manifest characterCount mismatch" };
     }
-    if (manifestItem.syncId !== validation.chat.chat.syncId || packageItem.syncId !== validation.chat.chat.syncId) {
+    if (
+      (manifestItem.syncId !== undefined && manifestItem.syncId !== validation.chat.chat.syncId) ||
+      (packageItem.syncId !== undefined && packageItem.syncId !== validation.chat.chat.syncId) ||
+      (manifestItem.syncId !== undefined && packageItem.syncId !== undefined && manifestItem.syncId !== packageItem.syncId)
+    ) {
       return { ok: false, error: "Native chat syncId mismatch" };
     }
     const characterIds = collectNativeLanChatCharacterIds(validation.chat);
-    if (!arraysEqual(manifestItem.characterIds, characterIds)) {
+    if (manifestItem.characterIds !== undefined && !arraysEqual(manifestItem.characterIds, characterIds)) {
       return { ok: false, error: "Native chat manifest characterIds mismatch" };
     }
     const messageFingerprints = validation.chat.messages.map((message) => message.fingerprint);
-    if (!arraysEqual(manifestItem.messageFingerprints, messageFingerprints)) {
+    if (manifestItem.messageFingerprints !== undefined && !arraysEqual(manifestItem.messageFingerprints, messageFingerprints)) {
       return { ok: false, error: "Native chat manifest messageFingerprints mismatch" };
     }
-    if (manifestItem.messageFingerprint !== fingerprintLanTransferMessageSequence(validation.chat.messages)) {
+    if (
+      manifestItem.messageFingerprint !== undefined &&
+      manifestItem.messageFingerprint !== fingerprintLanTransferMessageSequence(validation.chat.messages)
+    ) {
       return { ok: false, error: "Native chat manifest messageFingerprint mismatch" };
     }
   }
 
   if (manifestItem.type === "character" && manifestItem.format === "native" && packageItem.type === "character") {
-    if (manifestItem.syncId !== packageItem.syncId || manifestItem.fingerprint !== packageItem.fingerprint) {
+    if (
+      (manifestItem.syncId !== undefined || packageItem.syncId !== undefined) &&
+      manifestItem.syncId !== packageItem.syncId
+    ) {
       return { ok: false, error: "Character sync metadata mismatch" };
     }
-    if (manifestItem.fingerprint !== fingerprintNativeCharacterEnvelope(packageItem.envelope)) {
+    if (
+      (manifestItem.fingerprint !== undefined || packageItem.fingerprint !== undefined) &&
+      manifestItem.fingerprint !== packageItem.fingerprint
+    ) {
+      return { ok: false, error: "Character sync metadata mismatch" };
+    }
+    if (manifestItem.fingerprint !== undefined && manifestItem.fingerprint !== fingerprintNativeCharacterEnvelope(packageItem.envelope)) {
       return { ok: false, error: "Character fingerprint mismatch" };
     }
   }

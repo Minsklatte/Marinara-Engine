@@ -152,15 +152,19 @@ export function validateNativeLanChatExport(
   const chat = value.chat;
   if (
     !isNonEmptyString(chat.id) ||
-    !isNonEmptyString(chat.syncId) ||
     typeof chat.name !== "string" ||
     !chat.name.trim() ||
-    !isChatMode(chat.mode) ||
-    !isArrayOfNonEmptyStrings(chat.characterIds)
+    !isChatMode(chat.mode)
   ) {
     return { ok: false, error: "Native chat export chat must include name, mode, and characterIds" };
   }
-  if (chat.id !== chat.syncId) {
+  if (chat.characterIds !== undefined && !isArrayOfNonEmptyStrings(chat.characterIds)) {
+    return { ok: false, error: "Native chat export chat must include name, mode, and characterIds" };
+  }
+  if (chat.syncId !== undefined && !isNonEmptyString(chat.syncId)) {
+    return { ok: false, error: "Native chat export chat must include name, mode, and characterIds" };
+  }
+  if (chat.syncId !== undefined && chat.id !== chat.syncId) {
     return { ok: false, error: "Native chat export chat id must match syncId" };
   }
   if (!isValidMetadata(chat.metadata)) {
@@ -177,15 +181,18 @@ export function validateNativeLanChatExport(
     return { ok: false, error: "Native chat export chat timestamps must be valid strings" };
   }
 
+  const messages: NativeLanChatExport["messages"] = [];
   for (const message of value.messages) {
     if (!isRecord(message)) return { ok: false, error: "Native chat export message must be an object" };
     if (
       !isMessageRole(message.role) ||
       (message.characterId !== null &&
         (typeof message.characterId !== "string" || message.characterId.trim().length === 0)) ||
-      typeof message.content !== "string" ||
-      !isNonEmptyString(message.fingerprint)
+      typeof message.content !== "string"
     ) {
+      return { ok: false, error: "Native chat export message must include role, characterId, and content" };
+    }
+    if (message.fingerprint !== undefined && !isNonEmptyString(message.fingerprint)) {
       return { ok: false, error: "Native chat export message must include role, characterId, and content" };
     }
     if (!isOptionalCanonicalTimestamp(message.createdAt)) {
@@ -199,12 +206,45 @@ export function validateNativeLanChatExport(
       content: message.content,
       createdAt,
     });
-    if (message.fingerprint !== expectedFingerprint) {
+    if (message.fingerprint !== undefined && message.fingerprint !== expectedFingerprint) {
       return { ok: false, error: "Native chat export message fingerprint mismatch" };
     }
+    messages.push({
+      role: message.role,
+      characterId: message.characterId,
+      content: message.content,
+      fingerprint: message.fingerprint ?? expectedFingerprint,
+      ...(createdAt !== undefined && { createdAt }),
+    });
   }
 
-  return { ok: true, chat: value as unknown as NativeLanChatExport };
+  const personaId = normalizeOptionalString(chat.personaId);
+  const promptPresetId = normalizeOptionalString(chat.promptPresetId);
+  const connectionId = normalizeOptionalString(chat.connectionId);
+  const createdAt = normalizeOptionalString(chat.createdAt);
+  const updatedAt = normalizeOptionalString(chat.updatedAt);
+
+  return {
+    ok: true,
+    chat: {
+      type: "marinara_lan_chat",
+      version: 1,
+      chat: {
+        id: chat.id,
+        syncId: chat.syncId ?? chat.id,
+        name: chat.name,
+        mode: chat.mode,
+        characterIds: chat.characterIds ?? [],
+        ...(chat.personaId !== undefined && { personaId }),
+        ...(chat.promptPresetId !== undefined && { promptPresetId }),
+        ...(chat.connectionId !== undefined && { connectionId }),
+        ...(chat.metadata !== undefined && { metadata: chat.metadata }),
+        ...(chat.createdAt !== undefined && { createdAt }),
+        ...(chat.updatedAt !== undefined && { updatedAt }),
+      },
+      messages,
+    },
+  };
 }
 
 function parseCharacterIds(value: unknown): string[] {
@@ -288,6 +328,10 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isOptionalNonEmptyString(value: unknown): boolean {
   return value === undefined || value === null || isNonEmptyString(value);
+}
+
+function normalizeOptionalString(value: unknown): string | null | undefined {
+  return typeof value === "string" || value === null ? value : undefined;
 }
 
 function isOptionalCanonicalTimestamp(value: unknown): boolean {

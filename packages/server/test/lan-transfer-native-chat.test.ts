@@ -492,9 +492,17 @@ test("native LAN chat export validator rejects unsafe shapes", async () => {
   assert.equal(validateNativeLanChatExport(characterlessExport).ok, true);
   assert.deepEqual(collectNativeLanChatCharacterIds(characterlessExport as any), []);
   assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, syncId: "" } }).ok, false);
+  const legacyWithoutSmartMetadata = validateNativeLanChatExport({
+    ...baseExport,
+    chat: { ...baseExport.chat, syncId: undefined, characterIds: undefined },
+    messages: [{ role: "assistant", characterId: "source-character", content: "Hello" }],
+  });
+  assert.equal(legacyWithoutSmartMetadata.ok, true);
+  assert.equal(legacyWithoutSmartMetadata.ok ? legacyWithoutSmartMetadata.chat.chat.syncId : null, "source-chat");
+  assert.deepEqual(legacyWithoutSmartMetadata.ok ? legacyWithoutSmartMetadata.chat.chat.characterIds : null, []);
   assert.equal(
-    validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, syncId: undefined } }).ok,
-    false,
+    legacyWithoutSmartMetadata.ok ? legacyWithoutSmartMetadata.chat.messages[0]?.fingerprint : null,
+    fingerprintLanTransferMessage(message),
   );
   assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, name: "" } }).ok, false);
   assert.equal(
