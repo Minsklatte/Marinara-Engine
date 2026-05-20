@@ -153,8 +153,10 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
     const parts: string[] = [];
 
     if (chats > 0) parts.push(pluralize(chats, "chat"));
-    if (characters > 0) parts.push(`${pluralize(characters, "character")} as standalone items`);
-    if (bundledCharacters > 0) parts.push(`${pluralize(bundledCharacters, "card")} bundled with chats`);
+    if (characters > 0) parts.push(pluralize(characters, "character card"));
+    if (characters === 0 && bundledCharacters > 0) {
+      parts.push(`includes ${pluralize(bundledCharacters, "card")} bundled with chats`);
+    }
 
     return parts.length > 0 ? parts.join(" and ") : "No importable items";
   }, [preview]);
