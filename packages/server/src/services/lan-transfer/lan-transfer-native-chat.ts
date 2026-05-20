@@ -129,7 +129,7 @@ export function validateNativeLanChatExport(
     typeof chat.name !== "string" ||
     !chat.name.trim() ||
     !isChatMode(chat.mode) ||
-    !isNonEmptyStringArray(chat.characterIds)
+    !isArrayOfNonEmptyStrings(chat.characterIds)
   ) {
     return { ok: false, error: "Native chat export chat must include name, mode, and characterIds" };
   }
@@ -198,7 +198,7 @@ function isMessageRole(value: unknown): value is MessageRole {
   return typeof value === "string" && MESSAGE_ROLES.includes(value as MessageRole);
 }
 
-function isNonEmptyStringArray(value: unknown): value is string[] {
+function isArrayOfNonEmptyStrings(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isNonEmptyString);
 }
 

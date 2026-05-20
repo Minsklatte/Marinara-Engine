@@ -289,7 +289,9 @@ test("LAN package import skips native chat when required character mappings are 
   }));
 
 test("native LAN chat export validator rejects unsafe shapes", async () => {
-  const { validateNativeLanChatExport } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
+  const { collectNativeLanChatCharacterIds, validateNativeLanChatExport } = await import(
+    "../src/services/lan-transfer/lan-transfer-native-chat.js"
+  );
   const baseExport = {
     type: "marinara_lan_chat",
     version: 1,
@@ -303,9 +305,20 @@ test("native LAN chat export validator rejects unsafe shapes", async () => {
   };
 
   assert.equal(validateNativeLanChatExport(baseExport).ok, true);
+  const characterlessExport = {
+    ...baseExport,
+    chat: { ...baseExport.chat, characterIds: [] },
+    messages: [{ role: "user", characterId: null, content: "Hello" }],
+  };
+  assert.equal(validateNativeLanChatExport(characterlessExport).ok, true);
+  assert.deepEqual(collectNativeLanChatCharacterIds(characterlessExport as any), []);
   assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, name: "" } }).ok, false);
   assert.equal(
     validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, characterIds: [""] } }).ok,
+    false,
+  );
+  assert.equal(
+    validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, characterIds: ["  "] } }).ok,
     false,
   );
   assert.equal(
