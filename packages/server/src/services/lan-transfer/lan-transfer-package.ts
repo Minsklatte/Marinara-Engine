@@ -10,6 +10,13 @@ import { serializeChatTranscript } from "../export/chat-export.service.js";
 import { buildNativeCharacterEnvelope } from "../export/character-export.service.js";
 import { importMarinara } from "../import/marinara.importer.js";
 import { importSTChat } from "../import/st-chat.importer.js";
+import {
+  buildNativeLanChatExport,
+  collectNativeLanChatCharacterIds,
+  importNativeLanChat,
+  validateNativeLanChatExport,
+  type NativeLanChatExport,
+} from "./lan-transfer-native-chat.js";
 import { createCharacterGalleryStorage } from "../storage/character-gallery.storage.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
@@ -35,23 +42,88 @@ export async function buildLanTransferPackage(
   const gallery = createCharacterGalleryStorage(app.db);
   const packageItems: LanTransferPackage["items"] = [];
   const manifestItems: LanTransferManifest["items"] = [];
+  const addedCharacterIds = new Set<string>();
   let totalBytes = 0;
+
+  const addBytes = (bytes: number) => {
+    totalBytes += bytes;
+    if (totalBytes > LAN_TRANSFER_PACKAGE_MAX_BYTES) {
+      throw new Error("LAN transfer package exceeds maximum size");
+    }
+  };
+
+  const addCharacterItem = async (id: string) => {
+    if (addedCharacterIds.has(id)) return;
+
+    const character = await characters.getById(id);
+    if (!character) throw new Error(`Character not found: ${id}`);
+
+    const data = parseCharacterData(character.data, id);
+    const name = readName(data, id);
+    const envelope = await buildNativeCharacterEnvelope(character, data, gallery);
+    const bytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+    addBytes(bytes);
+
+    packageItems.push({
+      type: "character",
+      id,
+      name,
+      format: "native",
+      envelope,
+    });
+    manifestItems.push({
+      type: "character",
+      id,
+      name,
+      format: "native",
+      bytes,
+    });
+    addedCharacterIds.add(id);
+  };
 
   for (const item of items) {
     if (item.type === "chat") {
-      if (item.format === "native") {
-        throw new Error("Native chat LAN transfer is not implemented yet");
-      }
+      const format = item.format ?? "native";
 
       const chat = await chats.getById(item.id);
       if (!chat) throw new Error(`Chat not found: ${item.id}`);
 
+      if (format === "native") {
+        const nativeChat = await buildNativeLanChatExport(app.db, item.id);
+        const characterIds = collectNativeLanChatCharacterIds(nativeChat);
+        for (const characterId of characterIds) {
+          await addCharacterItem(characterId);
+        }
+
+        const bytes = Buffer.byteLength(JSON.stringify(nativeChat), "utf8");
+        addBytes(bytes);
+
+        packageItems.push({
+          type: "chat",
+          id: item.id,
+          name: nativeChat.chat.name,
+          format: "native",
+          chat: nativeChat,
+        });
+        manifestItems.push({
+          type: "chat",
+          id: item.id,
+          name: nativeChat.chat.name,
+          format: "native",
+          messageCount: nativeChat.messages.length,
+          characterCount: characterIds.length,
+          bytes,
+        });
+        continue;
+      }
+
+      if (format !== "jsonl") {
+        throw new Error(`Unsupported LAN transfer chat format: ${format}`);
+      }
+
       const serialized = await serializeChatTranscript(app, chats, chat, "jsonl");
       const bytes = Buffer.byteLength(serialized.content, "utf8");
-      totalBytes += bytes;
-      if (totalBytes > LAN_TRANSFER_PACKAGE_MAX_BYTES) {
-        throw new Error("LAN transfer package exceeds maximum size");
-      }
+      addBytes(bytes);
 
       packageItems.push({
         type: "chat",
@@ -72,32 +144,7 @@ export async function buildLanTransferPackage(
     }
 
     if (item.type === "character") {
-      const character = await characters.getById(item.id);
-      if (!character) throw new Error(`Character not found: ${item.id}`);
-
-      const data = parseCharacterData(character.data, item.id);
-      const name = readName(data, item.id);
-      const envelope = await buildNativeCharacterEnvelope(character, data, gallery);
-      const bytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
-      totalBytes += bytes;
-      if (totalBytes > LAN_TRANSFER_PACKAGE_MAX_BYTES) {
-        throw new Error("LAN transfer package exceeds maximum size");
-      }
-
-      packageItems.push({
-        type: "character",
-        id: item.id,
-        name,
-        format: "native",
-        envelope,
-      });
-      manifestItems.push({
-        type: "character",
-        id: item.id,
-        name,
-        format: "native",
-        bytes,
-      });
+      await addCharacterItem(item.id);
       continue;
     }
 
@@ -182,26 +229,22 @@ export async function importLanTransferPackage(
     },
     skipped: [],
   };
+  const characterIdMap: Record<string, string> = {};
 
   for (const item of pkg.items) {
     try {
-      if (item.type === "chat" && item.format === "jsonl") {
-        const result = await importSTChat(item.content, app.db, { chatName: item.name });
-        if ("success" in result && result.success) {
-          summary.imported.chats += 1;
-        } else {
-          summary.skipped.push({ type: item.type, name: item.name, reason: readImportError(result) });
-        }
-        continue;
-      }
-
       if (item.type === "character") {
         const result = await importMarinara(item.envelope as any, app.db);
         if (result.success) {
           summary.imported.characters += 1;
+          if (result.id) characterIdMap[item.id] = result.id;
         } else {
           summary.skipped.push({ type: item.type, name: item.name, reason: result.error ?? "Import failed" });
         }
+        continue;
+      }
+
+      if (item.type === "chat") {
         continue;
       }
 
@@ -210,6 +253,39 @@ export async function importLanTransferPackage(
       summary.skipped.push({
         type: (item as { type?: string }).type ?? "unknown",
         name: isRecord(item) && typeof item.name === "string" ? item.name : undefined,
+        reason: err instanceof Error ? err.message : "Import failed",
+      });
+    }
+  }
+
+  if (Object.keys(characterIdMap).length > 0) {
+    summary.characterIdMap = characterIdMap;
+  }
+
+  for (const item of pkg.items) {
+    try {
+      if (item.type === "chat" && item.format === "native") {
+        const result = await importNativeLanChat(app.db, item.chat as NativeLanChatExport, characterIdMap);
+        if (result.success) {
+          summary.imported.chats += 1;
+        } else {
+          summary.skipped.push({ type: item.type, name: item.name, reason: result.error });
+        }
+        continue;
+      }
+
+      if (item.type === "chat" && item.format === "jsonl") {
+        const result = await importSTChat(item.content, app.db, { chatName: item.name });
+        if ("success" in result && result.success) {
+          summary.imported.chats += 1;
+        } else {
+          summary.skipped.push({ type: item.type, name: item.name, reason: readImportError(result) });
+        }
+      }
+    } catch (err) {
+      summary.skipped.push({
+        type: item.type,
+        name: item.name,
         reason: err instanceof Error ? err.message : "Import failed",
       });
     }
@@ -296,7 +372,7 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
       if (!Object.prototype.hasOwnProperty.call(item, "chat")) {
         return { ok: false, error: "Native chat package item chat must be present" };
       }
-      return { ok: true };
+      return validateNativeLanChatExport(item.chat);
     }
     return { ok: false, error: "Chat package item must use jsonl or native format" };
   }

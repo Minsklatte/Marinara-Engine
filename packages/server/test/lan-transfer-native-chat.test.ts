@@ -151,6 +151,63 @@ test("native LAN chat export emits object metadata", async () =>
     assert.notEqual(exported.chat.metadata, null);
   }));
 
+test("LAN package for a chat includes its referenced character before the native chat item", async () =>
+  withDb(async (db) => {
+    const { buildLanTransferPackage } = await import("../src/services/lan-transfer/lan-transfer-package.js");
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const character = await characters.create({ name: "Ari", description: "", first_mes: "Hi" } as any);
+    assert.ok(character?.id);
+    const chat = await chats.create({ name: "Ari chat", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(chat?.id);
+    await chats.createMessagesBatch(chat.id, [{ role: "assistant", characterId: character.id, content: "Hello" }]);
+
+    const fakeApp = { db } as any;
+    const pkg = await buildLanTransferPackage(
+      fakeApp,
+      [{ type: "chat", id: chat.id, format: "native" }],
+      "2999-01-01T00:00:00.000Z",
+    );
+
+    assert.equal(pkg.items[0]?.type, "character");
+    assert.equal(pkg.items[0]?.id, character.id);
+    assert.equal(pkg.items[1]?.type, "chat");
+    assert.equal((pkg.items[1] as any).format, "native");
+    assert.equal(pkg.manifest.items[1]?.type, "chat");
+    assert.equal((pkg.manifest.items[1] as any).format, "native");
+    assert.equal((pkg.manifest.items[1] as any).messageCount, 1);
+    assert.equal((pkg.manifest.items[1] as any).characterCount, 1);
+    assert.equal(pkg.manifest.items.some((item) => item.type === "character" && item.name === "Ari"), true);
+
+    const pkgWithExplicitCharacter = await buildLanTransferPackage(
+      fakeApp,
+      [
+        { type: "chat", id: chat.id, format: "native" },
+        { type: "character", id: character.id },
+      ],
+      "2999-01-01T00:00:00.000Z",
+    );
+
+    assert.deepEqual(
+      pkgWithExplicitCharacter.items.map((item) => item.type),
+      ["character", "chat"],
+    );
+
+    const { importLanTransferPackage } = await import("../src/services/lan-transfer/lan-transfer-package.js");
+    const summary = await importLanTransferPackage(fakeApp, pkg);
+    const importedCharacterId = summary.characterIdMap?.[character.id];
+    assert.equal(summary.imported.characters, 1);
+    assert.equal(summary.imported.chats, 1);
+    assert.ok(importedCharacterId);
+    assert.notEqual(importedCharacterId, character.id);
+
+    const importedChat = (await chats.list()).find((candidate) => candidate.id !== chat.id && candidate.name === "Ari chat");
+    assert.ok(importedChat);
+    assert.deepEqual(JSON.parse(importedChat.characterIds as string), [importedCharacterId]);
+    const importedMessages = await chats.listMessages(importedChat.id);
+    assert.equal(importedMessages[0]?.characterId, importedCharacterId);
+  }));
+
 test("native LAN chat export validator rejects unsafe shapes", async () => {
   const { validateNativeLanChatExport } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
   const baseExport = {
