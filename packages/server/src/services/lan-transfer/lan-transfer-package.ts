@@ -24,6 +24,7 @@ import {
 import {
   createEmptyLanTransferImportSummary,
   importLanTransferCharacters,
+  omitEmptyLanTransferImportSummaryCounts,
   type LanTransferPackageImportOptions,
 } from "./lan-transfer-smart-import.js";
 import { createCharacterGalleryStorage } from "../storage/character-gallery.storage.js";
@@ -303,7 +304,7 @@ export async function importLanTransferPackage(
     }
   }
 
-  return summary;
+  return omitEmptyLanTransferImportSummaryCounts(summary);
 }
 
 function parseCharacterData(value: unknown, id: string): unknown {

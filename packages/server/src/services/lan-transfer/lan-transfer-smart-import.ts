@@ -52,7 +52,7 @@ export async function importLanTransferCharacters(
   options: LanTransferPackageImportOptions,
 ): Promise<Record<string, string>> {
   const characterIdMap: Record<string, string> = {};
-  const smart = options.importMode === "smart";
+  const smart = (options.importMode ?? "smart") === "smart";
 
   for (const item of pkg.items) {
     if (item.type !== "character") continue;
@@ -95,6 +95,21 @@ export async function importLanTransferCharacters(
 
   if (Object.keys(characterIdMap).length > 0) summary.characterIdMap = characterIdMap;
   return characterIdMap;
+}
+
+export function omitEmptyLanTransferImportSummaryCounts(
+  summary: LanTransferImportSummary,
+): LanTransferImportSummary {
+  if (summary.reused && summary.reused.chats === 0 && summary.reused.characters === 0) {
+    delete summary.reused;
+  }
+  if (summary.appended && summary.appended.chats === 0 && summary.appended.messages === 0) {
+    delete summary.appended;
+  }
+  if (summary.copied && summary.copied.chats === 0 && summary.copied.characters === 0) {
+    delete summary.copied;
+  }
+  return summary;
 }
 
 async function findExactCharacterByComparableEnvelope(

@@ -308,7 +308,7 @@ test("LAN package for a chat includes its referenced character before the native
     );
 
     const { importLanTransferPackage } = await import("../src/services/lan-transfer/lan-transfer-package.js");
-    const summary = await importLanTransferPackage(fakeApp, pkg);
+    const summary = await importLanTransferPackage(fakeApp, pkg, { importMode: "copy" });
     const importedCharacterId = summary.characterIdMap?.[character.id];
     assert.equal(summary.imported.characters, 1);
     assert.equal(summary.imported.chats, 1);
