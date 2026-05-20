@@ -19,6 +19,7 @@ import {
   buildImportedMessages,
   collectNativeLanChatCharacterIds,
   importNativeLanChat,
+  type NativeLanChatExport,
   validateNativeLanChatExport,
 } from "./lan-transfer-native-chat.js";
 
@@ -244,7 +245,7 @@ async function importNativeChatSmart(
     return;
   }
 
-  const localFingerprints = await getLocalMessageFingerprints(app, existing.id);
+  const localFingerprints = await getLocalMessageFingerprints(app, existing.id, validation.chat, characterIdMap);
   const incomingFingerprints = validation.chat.messages.map((message) => message.fingerprint);
   const comparison = compareFingerprintSequences(localFingerprints, incomingFingerprints);
   if (comparison.kind === "same" || comparison.kind === "local_ahead") {
@@ -334,9 +335,15 @@ async function findChatBySyncId(app: FastifyInstance, syncId: string) {
   return null;
 }
 
-async function getLocalMessageFingerprints(app: FastifyInstance, chatId: string): Promise<string[]> {
+async function getLocalMessageFingerprints(
+  app: FastifyInstance,
+  chatId: string,
+  incomingChat: NativeLanChatExport,
+  characterIdMap: Record<string, string>,
+): Promise<string[]> {
   const chats = createChatsStorage(app.db);
-  const characterSyncIds = await buildLocalCharacterSyncIdMap(app, chatId);
+  const incomingCharacterIds = buildIncomingCharacterIdsByLocalId(incomingChat, characterIdMap);
+  const characterSyncIds = await buildLocalCharacterSyncIdMap(app, chatId, incomingCharacterIds);
   const localMessages = await chats.listMessages(chatId);
   return localMessages.map((message) => {
     const extra = parseJsonObject(message.extra);
@@ -354,7 +361,23 @@ async function getLocalMessageFingerprints(app: FastifyInstance, chatId: string)
   });
 }
 
-async function buildLocalCharacterSyncIdMap(app: FastifyInstance, chatId: string): Promise<Map<string, string>> {
+function buildIncomingCharacterIdsByLocalId(
+  incomingChat: NativeLanChatExport,
+  characterIdMap: Record<string, string>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const sourceId of collectNativeLanChatCharacterIds(incomingChat)) {
+    const localId = characterIdMap[sourceId];
+    if (localId && !map.has(localId)) map.set(localId, sourceId);
+  }
+  return map;
+}
+
+async function buildLocalCharacterSyncIdMap(
+  app: FastifyInstance,
+  chatId: string,
+  incomingCharacterIds: Map<string, string>,
+): Promise<Map<string, string>> {
   const chats = createChatsStorage(app.db);
   const characters = createCharactersStorage(app.db);
   const ids = new Set<string>();
@@ -373,7 +396,8 @@ async function buildLocalCharacterSyncIdMap(app: FastifyInstance, chatId: string
       map.set(id, id);
       continue;
     }
-    map.set(id, readLanTransferSyncId({ data: { data: parseJsonObject(character.data) } }) ?? id);
+    const storedSyncId = readLanTransferSyncId({ data: { data: parseJsonObject(character.data) } });
+    map.set(id, storedSyncId ?? incomingCharacterIds.get(id) ?? id);
   }
   return map;
 }

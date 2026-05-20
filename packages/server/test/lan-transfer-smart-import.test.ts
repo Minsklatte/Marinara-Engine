@@ -287,6 +287,85 @@ test("smart import fallback fingerprints use synced character IDs for existing l
     );
   }));
 
+test("smart import fallback fingerprints use package character IDs when reused local characters lack LAN metadata", async () =>
+  withDb(async (db) => {
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const existingCharacter = await characters.create({
+      name: "Alicia",
+      description: "same",
+      first_mes: "Hi",
+    } as any);
+    assert.ok(existingCharacter?.id);
+    assert.notEqual(existingCharacter.id, "source-character");
+    const existing = await chats.create({
+      name: "Alicia thread",
+      mode: "roleplay",
+      characterIds: [existingCharacter.id],
+    });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      {
+        role: "assistant",
+        characterId: existingCharacter.id,
+        content: "One",
+        createdAt: "2026-05-20T12:00:00.000Z",
+      },
+    ]);
+
+    const sourceCharacter = await characters.create({
+      name: "Alicia",
+      description: "same",
+      first_mes: "Hi",
+      extensions: {
+        marinara_lan_transfer: {
+          syncId: "source-character",
+          fingerprint: "card-fingerprint",
+        },
+      },
+    } as any);
+    assert.ok(sourceCharacter?.id);
+    const source = await chats.create({
+      name: "Alicia thread",
+      mode: "roleplay",
+      characterIds: [sourceCharacter.id],
+    });
+    assert.ok(source?.id);
+    await chats.patchMetadata(source.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(source.id, [
+      {
+        role: "assistant",
+        characterId: sourceCharacter.id,
+        content: "One",
+        createdAt: "2026-05-20T12:00:00.000Z",
+      },
+      { role: "user", characterId: null, content: "Two", createdAt: "2026-05-20T12:01:00.000Z" },
+    ]);
+
+    const pkg = await buildLanTransferPackage(
+      { db } as any,
+      [{ type: "chat", id: source.id, format: "native" }],
+      "2999-01-01T00:00:00.000Z",
+    );
+    await chats.remove(source.id);
+    await characters.remove(sourceCharacter.id);
+
+    const summary = await importLanTransferPackage({ db } as any, pkg, { importMode: "smart" });
+
+    assert.equal(summary.reused?.characters, 1);
+    assert.equal(summary.appended?.chats, 1);
+    assert.equal(summary.appended?.messages, 1);
+    assert.equal(summary.imported.chats, 0);
+    assert.equal(summary.copied, undefined);
+    assert.deepEqual(summary.skipped, []);
+    assert.equal((await chats.list()).length, 1);
+    assert.deepEqual(
+      (await chats.listMessages(existing.id)).map((message) => message.content),
+      ["One", "Two"],
+    );
+  }));
+
 test("smart import append does not move existing chat updatedAt backwards", async () =>
   withDb(async (db) => {
     const characters = createCharactersStorage(db);
