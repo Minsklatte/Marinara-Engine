@@ -597,13 +597,29 @@ export function ChatSidebar() {
     [selectedChatIds, bulkExportChats, exitMultiSelect],
   );
 
+  const resolveBatchSendChatIds = useCallback(() => {
+    const resolved = new Set<string>();
+
+    for (const id of selectedChatIds) {
+      const selectedChat = chats?.find((chat) => chat.id === id);
+      if (activeChatId && activeGroupId && selectedChat?.groupId === activeGroupId) {
+        resolved.add(activeChatId);
+      } else {
+        resolved.add(id);
+      }
+    }
+
+    return [...resolved];
+  }, [selectedChatIds, chats, activeChatId, activeGroupId]);
+
   const handleBatchSend = useCallback(() => {
     if (selectedChatIds.size === 0) return;
+    const chatIds = resolveBatchSendChatIds();
     openModal("send-to-device", {
-      items: [...selectedChatIds].map((id) => ({ type: "chat", id, format: "jsonl" })),
+      items: chatIds.map((id) => ({ type: "chat", id, format: "jsonl" })),
       title: "Send Chats to Device",
     });
-  }, [selectedChatIds, openModal]);
+  }, [selectedChatIds, resolveBatchSendChatIds, openModal]);
 
   const handleBatchMoveToFolder = useCallback(
     (folderId: string | null) => {
