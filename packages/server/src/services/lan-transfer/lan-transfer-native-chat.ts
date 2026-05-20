@@ -1,13 +1,16 @@
 import type { ChatMode, MessageRole } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { parseTrustedTimestamp } from "../import/import-timestamps.js";
+import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
+import { fingerprintLanTransferMessage, readLanTransferSyncId } from "./lan-transfer-fingerprints.js";
 
 export interface NativeLanChatExport {
   type: "marinara_lan_chat";
   version: 1;
   chat: {
     id: string;
+    syncId: string;
     name: string;
     mode: ChatMode;
     characterIds: string[];
@@ -22,6 +25,7 @@ export interface NativeLanChatExport {
     role: "system" | "user" | "assistant" | "narrator";
     characterId: string | null;
     content: string;
+    fingerprint: string;
     createdAt?: string | null;
   }>;
 }
@@ -33,19 +37,27 @@ const MESSAGE_ROLES: readonly MessageRole[] = ["system", "user", "assistant", "n
 
 export async function buildNativeLanChatExport(db: DB, chatId: string): Promise<NativeLanChatExport> {
   const chats = createChatsStorage(db);
+  const characters = createCharactersStorage(db);
   const chat = await chats.getById(chatId);
   if (!chat) throw new Error(`Chat not found: ${chatId}`);
 
   const messages = await chats.listMessages(chatId);
+  const localCharacterIds = parseCharacterIds(chat.characterIds);
+  const characterIdMap = await buildCharacterSyncIdMap(characters, [
+    ...localCharacterIds,
+    ...messages.map((message) => message.characterId).filter((id): id is string => typeof id === "string"),
+  ]);
+  const syncChatId = readChatSyncId(parseMetadata(chat.metadata)) ?? chat.id;
 
   return {
     type: "marinara_lan_chat",
     version: 1,
     chat: {
       id: chat.id,
+      syncId: syncChatId,
       name: chat.name,
       mode: chat.mode,
-      characterIds: parseCharacterIds(chat.characterIds),
+      characterIds: localCharacterIds.map((id) => characterIdMap.get(id) ?? id),
       personaId: chat.personaId,
       promptPresetId: chat.promptPresetId,
       connectionId: chat.connectionId,
@@ -53,12 +65,20 @@ export async function buildNativeLanChatExport(db: DB, chatId: string): Promise<
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
     },
-    messages: messages.map((message) => ({
-      role: message.role,
-      characterId: message.characterId,
-      content: message.content,
-      createdAt: message.createdAt,
-    })),
+    messages: messages.map((message) => {
+      const syncCharacterId =
+        message.characterId === null ? null : (characterIdMap.get(message.characterId) ?? message.characterId);
+      const exportedMessage = {
+        role: message.role,
+        characterId: syncCharacterId,
+        content: message.content,
+        createdAt: message.createdAt,
+      };
+      return {
+        ...exportedMessage,
+        fingerprint: fingerprintLanTransferMessage(exportedMessage),
+      };
+    }),
   };
 }
 
@@ -126,6 +146,7 @@ export function validateNativeLanChatExport(
   const chat = value.chat;
   if (
     !isNonEmptyString(chat.id) ||
+    !isOptionalNonEmptyString(chat.syncId) ||
     typeof chat.name !== "string" ||
     !chat.name.trim() ||
     !isChatMode(chat.mode) ||
@@ -153,7 +174,8 @@ export function validateNativeLanChatExport(
       !isMessageRole(message.role) ||
       (message.characterId !== null &&
         (typeof message.characterId !== "string" || message.characterId.trim().length === 0)) ||
-      typeof message.content !== "string"
+      typeof message.content !== "string" ||
+      !isOptionalNonEmptyString(message.fingerprint)
     ) {
       return { ok: false, error: "Native chat export message must include role, characterId, and content" };
     }
@@ -184,6 +206,40 @@ function parseMetadata(value: unknown): unknown {
   } catch {
     return {};
   }
+}
+
+async function buildCharacterSyncIdMap(
+  characters: ReturnType<typeof createCharactersStorage>,
+  characterIds: string[],
+): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  for (const id of new Set(characterIds)) {
+    const character = await characters.getById(id);
+    if (!character) {
+      map.set(id, id);
+      continue;
+    }
+    const data = parseCharacterData(character.data);
+    map.set(id, readLanTransferSyncId({ data: { data } }) ?? id);
+  }
+  return map;
+}
+
+function parseCharacterData(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function readChatSyncId(metadata: unknown): string | null {
+  if (!isRecord(metadata)) return null;
+  const lanTransfer = metadata.lanTransfer;
+  if (!isRecord(lanTransfer)) return null;
+  const syncId = lanTransfer.syncId;
+  return typeof syncId === "string" && syncId.trim().length > 0 ? syncId : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -225,7 +281,7 @@ function isOptionalCanonicalTimestamp(value: unknown): boolean {
 function buildImportedMessages(
   messages: NativeLanChatExport["messages"],
   characterIdMap: Record<string, string>,
-): NativeLanChatExport["messages"] {
+): Array<Omit<NativeLanChatExport["messages"][number], "fingerprint">> {
   let previousTimestampMs: number | null = null;
   const fallbackBaseMs = Date.now();
 

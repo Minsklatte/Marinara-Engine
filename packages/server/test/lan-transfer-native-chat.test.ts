@@ -151,6 +151,93 @@ test("native LAN chat export emits object metadata", async () =>
     assert.notEqual(exported.chat.metadata, null);
   }));
 
+test("native LAN chat export emits stable sync IDs and message fingerprints", async () =>
+  withDb(async (db) => {
+    const { buildNativeLanChatExport } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
+    const { fingerprintLanTransferMessage } = await import(
+      "../src/services/lan-transfer/lan-transfer-fingerprints.js"
+    );
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const character = await characters.create({
+      name: "Ari",
+      description: "",
+      first_mes: "Hi",
+      extensions: {
+        marinara_lan_transfer: {
+          syncId: "sync-character-ari",
+          fingerprint: "existing-character-fingerprint",
+        },
+      },
+    } as any);
+    assert.ok(character?.id);
+    const fallbackCharacter = await characters.create({ name: "Bea", description: "", first_mes: "Hi" } as any);
+    assert.ok(fallbackCharacter?.id);
+    const chat = await chats.create({
+      name: "Synced chat",
+      mode: "roleplay",
+      characterIds: [character.id, fallbackCharacter.id],
+    });
+    assert.ok(chat?.id);
+    await chats.updateMetadata(chat.id, {
+      lanTransfer: {
+        syncId: "sync-chat-ari",
+      },
+    });
+    await chats.createMessagesBatch(chat.id, [
+      {
+        role: "assistant",
+        characterId: character.id,
+        content: "Hello",
+        createdAt: "2026-05-20T12:00:00.000Z",
+      },
+      {
+        role: "assistant",
+        characterId: fallbackCharacter.id,
+        content: "Fallback",
+        createdAt: "2026-05-20T12:00:01.000Z",
+      },
+      {
+        role: "user",
+        characterId: null,
+        content: "Thanks",
+        createdAt: "2026-05-20T12:00:02.000Z",
+      },
+    ]);
+
+    const exported = await buildNativeLanChatExport(db, chat.id);
+
+    assert.equal(exported.chat.syncId, "sync-chat-ari");
+    assert.deepEqual(exported.chat.characterIds, ["sync-character-ari", fallbackCharacter.id]);
+    assert.deepEqual(
+      exported.messages.map((message) => message.characterId),
+      ["sync-character-ari", fallbackCharacter.id, null],
+    );
+    assert.deepEqual(
+      exported.messages.map((message) => message.fingerprint),
+      [
+        fingerprintLanTransferMessage({
+          role: "assistant",
+          characterId: "sync-character-ari",
+          content: "Hello",
+          createdAt: "2026-05-20T12:00:00.000Z",
+        }),
+        fingerprintLanTransferMessage({
+          role: "assistant",
+          characterId: fallbackCharacter.id,
+          content: "Fallback",
+          createdAt: "2026-05-20T12:00:01.000Z",
+        }),
+        fingerprintLanTransferMessage({
+          role: "user",
+          characterId: null,
+          content: "Thanks",
+          createdAt: "2026-05-20T12:00:02.000Z",
+        }),
+      ],
+    );
+  }));
+
 test("LAN package for a chat includes its referenced character before the native chat item", async () =>
   withDb(async (db) => {
     const { buildLanTransferPackage } = await import("../src/services/lan-transfer/lan-transfer-package.js");
