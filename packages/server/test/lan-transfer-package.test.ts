@@ -106,6 +106,82 @@ test("rejects native chat package bytes that match stray content instead of chat
   assert.deepEqual(result, { ok: false, error: "Manifest item bytes mismatch" });
 });
 
+test("rejects forged native chat manifest message count", () => {
+  const chat = {
+    type: "marinara_lan_chat",
+    version: 1,
+    chat: { id: "chat-1", name: "Chat", mode: "roleplay", characterIds: ["char-1"] },
+    messages: [{ role: "user", characterId: null, content: "hi" }],
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(chat), "utf8");
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            type: "chat",
+            id: "chat-1",
+            name: "Chat",
+            format: "native",
+            messageCount: 2,
+            characterCount: 1,
+            bytes,
+          },
+        ],
+        totalBytes: bytes,
+      },
+      items: [{ type: "chat", id: "chat-1", name: "Chat", format: "native", chat }],
+    },
+    { now: () => NOW },
+  );
+
+  assert.deepEqual(result, { ok: false, error: "Native chat manifest messageCount mismatch" });
+});
+
+test("rejects forged native chat manifest character count", () => {
+  const chat = {
+    type: "marinara_lan_chat",
+    version: 1,
+    chat: { id: "chat-1", name: "Chat", mode: "roleplay", characterIds: ["char-1"] },
+    messages: [{ role: "assistant", characterId: "char-1", content: "hi" }],
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(chat), "utf8");
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            type: "chat",
+            id: "chat-1",
+            name: "Chat",
+            format: "native",
+            messageCount: 1,
+            characterCount: 2,
+            bytes,
+          },
+        ],
+        totalBytes: bytes,
+      },
+      items: [{ type: "chat", id: "chat-1", name: "Chat", format: "native", chat }],
+    },
+    { now: () => NOW },
+  );
+
+  assert.deepEqual(result, { ok: false, error: "Native chat manifest characterCount mismatch" });
+});
+
 test("rejects native chat package item with invalid native export", () => {
   const chat = { id: "chat-1", messages: [{ role: "user", content: "hi" }] };
   const bytes = Buffer.byteLength(JSON.stringify(chat), "utf8");

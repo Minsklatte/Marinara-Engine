@@ -208,6 +208,86 @@ test("LAN package for a chat includes its referenced character before the native
     assert.equal(importedMessages[0]?.characterId, importedCharacterId);
   }));
 
+test("LAN package import skips native chat when required character mappings are missing", async () =>
+  withDb(async (db) => {
+    const { importLanTransferPackage } = await import("../src/services/lan-transfer/lan-transfer-package.js");
+    const chats = createChatsStorage(db);
+    const sourceCharacterId = "source-character";
+    const pkg = {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-20T00:00:00.000Z",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            type: "character",
+            id: sourceCharacterId,
+            name: "Ari",
+            format: "native",
+            bytes: 2,
+          },
+          {
+            type: "chat",
+            id: "source-chat",
+            name: "Ari chat",
+            format: "native",
+            messageCount: 1,
+            characterCount: 1,
+            bytes: 0,
+          },
+        ],
+        totalBytes: 0,
+      },
+      items: [
+        {
+          type: "character",
+          id: sourceCharacterId,
+          name: "Ari",
+          format: "native",
+          envelope: {},
+        },
+        {
+          type: "chat",
+          id: "source-chat",
+          name: "Ari chat",
+          format: "native",
+          chat: {
+            type: "marinara_lan_chat",
+            version: 1,
+            chat: {
+              id: "source-chat",
+              name: "Ari chat",
+              mode: "roleplay",
+              characterIds: [sourceCharacterId],
+            },
+            messages: [{ role: "assistant", characterId: sourceCharacterId, content: "Hello" }],
+          },
+        },
+      ],
+    } as any;
+
+    const summary = await importLanTransferPackage({ db } as any, pkg);
+
+    assert.equal(summary.imported.chats, 0);
+    assert.equal(summary.imported.characters, 0);
+    assert.deepEqual(summary.skipped, [
+      {
+        type: "character",
+        name: "Ari",
+        reason: "Invalid Marinara export file",
+      },
+      {
+        type: "chat",
+        name: "Ari chat",
+        reason: "Missing imported character mappings: source-character",
+      },
+    ]);
+    assert.deepEqual(await chats.list(), []);
+  }));
+
 test("native LAN chat export validator rejects unsafe shapes", async () => {
   const { validateNativeLanChatExport } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
   const baseExport = {

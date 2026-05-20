@@ -15,7 +15,6 @@ import {
   collectNativeLanChatCharacterIds,
   importNativeLanChat,
   validateNativeLanChatExport,
-  type NativeLanChatExport,
 } from "./lan-transfer-native-chat.js";
 import { createCharacterGalleryStorage } from "../storage/character-gallery.storage.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
@@ -265,7 +264,25 @@ export async function importLanTransferPackage(
   for (const item of pkg.items) {
     try {
       if (item.type === "chat" && item.format === "native") {
-        const result = await importNativeLanChat(app.db, item.chat as NativeLanChatExport, characterIdMap);
+        const validation = validateNativeLanChatExport(item.chat);
+        if (!validation.ok) {
+          summary.skipped.push({ type: item.type, name: item.name, reason: validation.error });
+          continue;
+        }
+
+        const missingCharacterIds = collectNativeLanChatCharacterIds(validation.chat).filter(
+          (id) => !characterIdMap[id],
+        );
+        if (missingCharacterIds.length > 0) {
+          summary.skipped.push({
+            type: item.type,
+            name: item.name,
+            reason: `Missing imported character mappings: ${missingCharacterIds.join(", ")}`,
+          });
+          continue;
+        }
+
+        const result = await importNativeLanChat(app.db, validation.chat, characterIdMap);
         if (result.success) {
           summary.imported.chats += 1;
         } else {
@@ -436,6 +453,17 @@ function validateManifestItemMatchesPackageItem(
     manifestItem.format !== packageItem.format
   ) {
     return { ok: false, error: "Manifest item does not match package item" };
+  }
+
+  if (manifestItem.type === "chat" && manifestItem.format === "native" && packageItem.type === "chat") {
+    const validation = validateNativeLanChatExport(packageItem.chat);
+    if (!validation.ok) return validation;
+    if (manifestItem.messageCount !== validation.chat.messages.length) {
+      return { ok: false, error: "Native chat manifest messageCount mismatch" };
+    }
+    if (manifestItem.characterCount !== collectNativeLanChatCharacterIds(validation.chat).length) {
+      return { ok: false, error: "Native chat manifest characterCount mismatch" };
+    }
   }
 
   return { ok: true };
