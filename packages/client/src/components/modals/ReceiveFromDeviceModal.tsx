@@ -25,6 +25,13 @@ function getErrorMessage(error: unknown, fallback: string) {
 
 type PreviewManifestItem = LanTransferPreviewResponse["manifest"]["items"][number];
 
+interface PreviewDisplayRow {
+  key: string;
+  title: string;
+  chips: string[];
+  actions: LanTransferPreviewAction[];
+}
+
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
@@ -50,31 +57,15 @@ function getLinkedCharacterNames(item: PreviewManifestItem, action?: LanTransfer
   return undefined;
 }
 
-function getItemTypeLabel(item: PreviewManifestItem, action?: LanTransferPreviewAction) {
-  if (item.type === "character") return "Character card";
-  if (item.format !== "native") return "Chat";
-
-  const linkedCharacterNames = getLinkedCharacterNames(item, action);
-  if (linkedCharacterNames?.length === 1) return `1 chat linked to ${linkedCharacterNames[0]}`;
-
-  const bundledCharacters = getBundledCharacterCount(item);
-  if (bundledCharacters > 1 || (linkedCharacterNames && linkedCharacterNames.length > 1)) {
-    return `1 chat linked to ${pluralize(linkedCharacterNames?.length ?? bundledCharacters, "card")}`;
-  }
-
-  if (bundledCharacters === 1) return "1 chat linked to 1 card";
-  return "1 chat";
-}
-
 function getActionLabel(action?: LanTransferPreviewAction) {
   if (!action) return null;
 
   if (action.type === "character") {
-    return action.action === "reuse" ? "Will reuse existing card" : "Will import card";
+    return action.action === "reuse" ? "Using existing card" : "Will import card";
   }
 
   if (action.action === "skip") return "Already up to date";
-  if (action.action === "append") return `Will append ${pluralize(action.appendCount ?? 0, "message")}`;
+  if (action.action === "append") return `Will add ${pluralize(action.appendCount ?? 0, "message")}`;
   if (action.action === "conflict-copy") return "History differs; will import a copy";
   return "Will import a copy";
 }
@@ -86,6 +77,72 @@ function getVisibleActionLabel(importAsCopies: boolean, action?: LanTransferPrev
 
 function getActionKey(action: LanTransferPreviewAction) {
   return `${action.type}:${action.sourceId}`;
+}
+
+function getPrimaryLinkedCharacterName(item: PreviewManifestItem, action?: LanTransferPreviewAction) {
+  const names = getLinkedCharacterNames(item, action);
+  return names?.length === 1 ? names[0] : null;
+}
+
+function getStandaloneItemChip(item: PreviewManifestItem) {
+  return item.type === "character" ? "1 card" : "1 chat";
+}
+
+function summarizePreviewChips(chips: string[]) {
+  const chatCount = chips.filter((chip) => chip === "1 chat").length;
+  const cardCount = chips.filter((chip) => chip === "1 card").length;
+  const otherChips = chips.filter((chip) => chip !== "1 chat" && chip !== "1 card");
+  const summarized: string[] = [];
+
+  if (cardCount > 0) summarized.push(pluralize(cardCount, "card"));
+  if (chatCount > 0) summarized.push(pluralize(chatCount, "chat"));
+  summarized.push(...otherChips);
+  return summarized;
+}
+
+function buildPreviewRows(
+  items: PreviewManifestItem[],
+  actionByItemKey: Map<string, LanTransferPreviewAction>,
+): PreviewDisplayRow[] {
+  const rows: PreviewDisplayRow[] = [];
+  const groupedByCharacter = new Map<string, PreviewDisplayRow>();
+
+  for (const item of items) {
+    const action = actionByItemKey.get(`${item.type}:${item.id}`);
+    const linkedName = item.type === "chat" ? getPrimaryLinkedCharacterName(item, action) : null;
+    const title = item.type === "character" ? item.name : linkedName;
+
+    if (title) {
+      const existing = groupedByCharacter.get(title);
+      if (existing) {
+        existing.chips.push(getStandaloneItemChip(item));
+        if (action) existing.actions.push(action);
+        continue;
+      }
+
+      const row: PreviewDisplayRow = {
+        key: `group:${title}:${item.id}`,
+        title,
+        chips: [getStandaloneItemChip(item)],
+        actions: action ? [action] : [],
+      };
+      groupedByCharacter.set(title, row);
+      rows.push(row);
+      continue;
+    }
+
+    rows.push({
+      key: `${item.type}:${item.id}`,
+      title: item.name,
+      chips: [getStandaloneItemChip(item)],
+      actions: action ? [action] : [],
+    });
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    chips: summarizePreviewChips(row.chips),
+  }));
 }
 
 function pushCountPart(parts: string[], count: number | undefined, singular: string, plural?: string) {
@@ -100,25 +157,33 @@ function joinCountParts(parts: string[]) {
 function getImportSummary(summary: LanTransferImportSummary) {
   const sentences: string[] = [];
   const importedParts: string[] = [];
-  const reusedParts: string[] = [];
+  const existingParts: string[] = [];
   const copiedParts: string[] = [];
+  const copiedChats = summary.copied?.chats ?? 0;
+  const copiedCharacters = summary.copied?.characters ?? 0;
+  const importedChats = Math.max(0, summary.imported.chats - copiedChats);
+  const importedCharacters = Math.max(0, summary.imported.characters - copiedCharacters);
 
-  pushCountPart(importedParts, summary.imported.chats, "chat");
-  pushCountPart(importedParts, summary.imported.characters, "character");
-  pushCountPart(reusedParts, summary.reused?.chats, "chat");
-  pushCountPart(reusedParts, summary.reused?.characters, "card");
+  pushCountPart(importedParts, importedChats, "chat");
+  pushCountPart(importedParts, importedCharacters, "card");
+  pushCountPart(existingParts, summary.reused?.chats, "chat");
+  pushCountPart(existingParts, summary.reused?.characters, "card");
   pushCountPart(copiedParts, summary.copied?.chats, "chat");
   pushCountPart(copiedParts, summary.copied?.characters, "card");
 
-  sentences.push(`Imported ${importedParts.length > 0 ? joinCountParts(importedParts) : "0 items"}`);
-  if (reusedParts.length > 0) sentences.push(`reused ${joinCountParts(reusedParts)}`);
   if (summary.appended && summary.appended.messages > 0) {
     sentences.push(
-      `appended ${pluralize(summary.appended.messages, "message")} to ${pluralize(summary.appended.chats, "chat")}`,
+      `Added ${pluralize(summary.appended.messages, "message")} to ${pluralize(summary.appended.chats, "chat")}`,
     );
   }
-  if (copiedParts.length > 0) sentences.push(`copied ${joinCountParts(copiedParts)}`);
-  if (summary.skipped.length > 0) sentences.push(`skipped ${summary.skipped.length}`);
+
+  if (importedParts.length > 0) sentences.push(`Imported ${joinCountParts(importedParts)}`);
+  if (existingParts.length > 0) sentences.push(`Used ${joinCountParts(existingParts)} already on this device`);
+  if (copiedParts.length > 0) {
+    sentences.push(`Imported ${joinCountParts(copiedParts)} as ${copiedParts.length === 1 ? "a copy" : "copies"}`);
+  }
+  if (sentences.length === 0 && summary.skipped.length === 0) sentences.push("Everything was already up to date");
+  if (summary.skipped.length > 0) sentences.push(`Skipped ${summary.skipped.length}`);
 
   return `${sentences.join("; ")}.`;
 }
@@ -413,6 +478,11 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
     return new Map(actions.map((action) => [getActionKey(action), action]));
   }, [preview?.analysis?.actions]);
 
+  const previewRows = useMemo(() => {
+    if (!preview) return [];
+    return buildPreviewRows(preview.manifest.items, actionByItemKey);
+  }, [actionByItemKey, preview]);
+
   return (
     <Modal open={open} onClose={handleClose} title="Receive from Device" width="max-w-2xl">
       <div className="space-y-4">
@@ -490,29 +560,42 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
             </div>
 
             <div className="max-h-64 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--background)]">
-              {preview.manifest.items.map((item) => {
-                const action = actionByItemKey.get(`${item.type}:${item.id}`);
-                const itemTypeLabel = getItemTypeLabel(item, action);
-                const actionLabel = getVisibleActionLabel(importAsCopies, action);
+              {previewRows.map((row) => {
+                const actionLabels = Array.from(
+                  new Set(
+                    row.actions
+                      .map((action) => getVisibleActionLabel(importAsCopies, action))
+                      .filter((label): label is string => Boolean(label)),
+                  ),
+                );
 
                 return (
                   <div
-                    key={`${item.type}:${item.id}`}
+                    key={row.key}
                     className="flex items-center justify-between gap-3 border-b border-[var(--border)]/60 px-3 py-2 last:border-b-0 max-sm:flex-col max-sm:items-start"
                   >
-                    <span className="min-w-0 truncate text-sm font-medium text-[var(--foreground)]">{item.name}</span>
+                    <span className="min-w-0 truncate text-sm font-medium text-[var(--foreground)]" title={row.title}>
+                      {row.title}
+                    </span>
                     <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start sm:max-w-[70%]">
-                      <span
-                        title={itemTypeLabel}
-                        className="max-w-full truncate rounded-md bg-[var(--muted)] px-2 py-1 text-xs font-semibold text-[var(--muted-foreground)] sm:max-w-72"
-                      >
-                        {itemTypeLabel}
-                      </span>
-                      {actionLabel && (
-                        <span className="max-w-full truncate rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 px-2 py-1 text-xs font-semibold text-[var(--foreground)] sm:max-w-72">
-                          {actionLabel}
+                      {row.chips.map((chip) => (
+                        <span
+                          key={chip}
+                          title={chip}
+                          className="max-w-full truncate rounded-md bg-[var(--muted)] px-2 py-1 text-xs font-semibold text-[var(--muted-foreground)] sm:max-w-72"
+                        >
+                          {chip}
                         </span>
-                      )}
+                      ))}
+                      {actionLabels.map((label) => (
+                        <span
+                          key={label}
+                          title={label}
+                          className="max-w-full truncate rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 px-2 py-1 text-xs font-semibold text-[var(--foreground)] sm:max-w-72"
+                        >
+                          {label}
+                        </span>
+                      ))}
                     </div>
                   </div>
                 );
