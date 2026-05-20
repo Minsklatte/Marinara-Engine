@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-const LAN_TRANSFER_EXTENSION_KEYS = new Set(["marinara_lan_transfer", "lanTransfer"]);
+const LAN_TRANSFER_EXTENSION_KEY = "marinara_lan_transfer";
 
 export interface LanTransferCharacterSyncMetadata {
   syncId: string;
@@ -94,7 +94,7 @@ function stripVolatileCharacterEnvelopeFields(value: unknown): unknown {
   if (isRecord(cloned.data) && isRecord(cloned.data.data)) {
     const cardData = cloned.data.data;
     if (isRecord(cardData.extensions)) {
-      for (const key of LAN_TRANSFER_EXTENSION_KEYS) delete cardData.extensions[key];
+      delete cardData.extensions[LAN_TRANSFER_EXTENSION_KEY];
     }
   }
   return cloned;
@@ -114,20 +114,14 @@ function canonicalize(value: unknown): unknown {
 function readLanTransferMetadata(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
 
-  if (isRecord(value.marinara_lan_transfer)) return value.marinara_lan_transfer;
-  if (isRecord(value.lanTransfer)) return value.lanTransfer;
-
-  const extensions = isRecord(value.extensions) ? value.extensions : null;
-  if (extensions) {
-    if (isRecord(extensions.marinara_lan_transfer)) return extensions.marinara_lan_transfer;
-    if (isRecord(extensions.lanTransfer)) return extensions.lanTransfer;
-  }
-
-  if (isRecord(value.data)) {
-    return readLanTransferMetadata(value.data);
-  }
-
-  return null;
+  const outerData = value.data;
+  if (!isRecord(outerData)) return null;
+  const cardData = outerData.data;
+  if (!isRecord(cardData)) return null;
+  const extensions = cardData.extensions;
+  if (!isRecord(extensions)) return null;
+  const metadata = extensions[LAN_TRANSFER_EXTENSION_KEY];
+  return isRecord(metadata) ? metadata : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
