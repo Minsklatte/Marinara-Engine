@@ -428,6 +428,10 @@ export function isLanTransferEnabled() {
   return isEnabledFlag(process.env.LAN_TRANSFER_ENABLED ?? process.env.MARINARA_LAN_TRANSFER_ENABLED);
 }
 
+export function getLanTransferPublicOrigin() {
+  return normalizeEnvValue(process.env.LAN_TRANSFER_PUBLIC_ORIGIN);
+}
+
 export function isProviderLocalUrlsEnabled() {
   return isEnabledFlag(process.env.PROVIDER_LOCAL_URLS_ENABLED);
 }

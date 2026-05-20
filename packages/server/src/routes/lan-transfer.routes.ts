@@ -8,7 +8,7 @@ import type {
   LanTransferPayload,
 } from "@marinara-engine/shared";
 import { LAN_TRANSFER_TYPE, LAN_TRANSFER_VERSION } from "@marinara-engine/shared";
-import { isLanTransferEnabled } from "../config/runtime-config.js";
+import { getLanTransferPublicOrigin, getPort, isLanTransferEnabled } from "../config/runtime-config.js";
 import { newId } from "../utils/id-generator.js";
 import {
   decryptLanTransferPackage,
@@ -29,6 +29,7 @@ import {
   parseLanTransferPayload,
   serializeLanTransferPayload,
 } from "../services/lan-transfer/lan-transfer-payload.js";
+import { resolveLanTransferOrigins } from "../services/lan-transfer/lan-transfer-origins.js";
 import {
   validateLanTransferOrigin,
   type LanTransferOriginValidationResult,
@@ -64,11 +65,12 @@ export async function lanTransferRoutes(app: FastifyInstance) {
     try {
       const pkg = await buildLanTransferPackage(app, body.items as LanTransferItemRequest[], expiresAt);
       const encryptedPackage = encryptLanTransferPackage(JSON.stringify(pkg), secret);
-      const from = getRequestOrigin(request);
+      const origins = getRequestOrigins(request);
       const transferPayload = serializeLanTransferPayload({
         type: LAN_TRANSFER_TYPE,
         version: LAN_TRANSFER_VERSION,
-        from,
+        from: origins[0] ?? getRequestOrigin(request),
+        origins,
         offerId,
         downloadToken,
         secret,
@@ -212,6 +214,17 @@ function getRequestOrigin(request: FastifyRequest): string {
   const host = request.headers.host ?? "localhost";
   const protocol = request.protocol || "http";
   return `${protocol}://${host}`;
+}
+
+function getRequestOrigins(request: FastifyRequest): string[] {
+  const host = request.headers.host ?? "localhost";
+  const protocol = (request.protocol || "http") as "http" | "https";
+  return resolveLanTransferOrigins({
+    protocol,
+    requestHost: host,
+    configuredOrigin: getLanTransferPublicOrigin(),
+    port: getPort(),
+  });
 }
 
 async function fetchSenderJson<T>(

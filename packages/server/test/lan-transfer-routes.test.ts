@@ -22,6 +22,7 @@ import {
   parseLanTransferPayload,
   serializeLanTransferPayload,
 } from "../src/services/lan-transfer/lan-transfer-payload.js";
+import { createCharactersStorage } from "../src/services/storage/characters.storage.js";
 
 type EnvPatch = Record<string, string | undefined>;
 
@@ -136,6 +137,75 @@ test("disabled LAN transfer returns 403", async () =>
     assert.equal(response.statusCode, 403, response.body);
     assert.deepEqual(JSON.parse(response.body), { error: "LAN transfer is disabled" });
   }));
+
+test("origin helper ranks public configured origin before loopback request origin", async () => {
+  const { resolveLanTransferOrigins } = await import("../src/services/lan-transfer/lan-transfer-origins.js");
+  const origins = resolveLanTransferOrigins({
+    protocol: "http",
+    requestHost: "localhost:7860",
+    configuredOrigin: "http://192.168.1.230:7860",
+    interfaceAddresses: ["192.168.1.230", "10.12.42.103"],
+    port: 7860,
+  });
+
+  assert.deepEqual(origins, [
+    "http://192.168.1.230:7860",
+    "http://10.12.42.103:7860",
+    "http://localhost:7860",
+  ]);
+});
+
+test("create offer advertises configured public origin first", async () =>
+  withLanTransferApp(
+    {
+      LAN_TRANSFER_ENABLED: "1",
+      LAN_TRANSFER_PUBLIC_ORIGIN: "http://192.168.1.230:7860",
+      PORT: "7860",
+    },
+    async (app) => {
+      const characters = createCharactersStorage(app.db);
+      const character = await characters.create({
+        name: "LAN Origin Test Character",
+        description: "",
+        personality: "",
+        scenario: "",
+        first_mes: "Hello.",
+        mes_example: "",
+        creator_notes: "",
+        system_prompt: "",
+        post_history_instructions: "",
+        tags: [],
+        creator: "",
+        character_version: "",
+        alternate_greetings: [],
+        extensions: {
+          talkativeness: 0.5,
+          fav: false,
+          world: "",
+          depth_prompt: { prompt: "", depth: 4, role: "system" },
+          backstory: "",
+          appearance: "",
+        },
+        character_book: null,
+      });
+      assert.notEqual(character, null);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/lan-transfer/offers",
+        headers: { host: "localhost:7860" },
+        payload: { items: [{ type: "character", id: character.id }] },
+      });
+
+      assert.equal(response.statusCode, 200, response.body);
+      const parsed = JSON.parse(response.body) as { transferPayload: string };
+      const payload = parseLanTransferPayload(parsed.transferPayload);
+      assert.notEqual(payload, null);
+      assert.equal(payload?.from, "http://192.168.1.230:7860");
+      assert.equal(payload?.origins?.[0], "http://192.168.1.230:7860");
+      assert.ok(payload?.origins?.includes("http://localhost:7860"));
+    },
+  ));
 
 test("download consumes an offer once after token verification", async () =>
   withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
