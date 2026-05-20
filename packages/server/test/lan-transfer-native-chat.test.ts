@@ -185,6 +185,25 @@ test("native LAN chat export validator rejects unsafe shapes", async () => {
     }).ok,
     false,
   );
+  assert.equal(
+    validateNativeLanChatExport({
+      ...baseExport,
+      messages: [{ role: "assistant", characterId: null, content: "Hello", createdAt: "0" }],
+    }).ok,
+    false,
+  );
+  assert.equal(
+    validateNativeLanChatExport({
+      ...baseExport,
+      chat: { ...baseExport.chat, createdAt: "2026-02-31T00:00:00.000Z" },
+    }).ok,
+    false,
+  );
+  assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, id: "  " } }).ok, false);
+  assert.equal(
+    validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, personaId: "  " } }).ok,
+    false,
+  );
   assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, metadata: [] } }).ok, false);
 });
 

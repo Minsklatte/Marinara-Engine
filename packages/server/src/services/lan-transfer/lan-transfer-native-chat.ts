@@ -125,7 +125,7 @@ export function validateNativeLanChatExport(
 
   const chat = value.chat;
   if (
-    typeof chat.id !== "string" ||
+    !isNonEmptyString(chat.id) ||
     typeof chat.name !== "string" ||
     !chat.name.trim() ||
     !isChatMode(chat.mode) ||
@@ -136,7 +136,14 @@ export function validateNativeLanChatExport(
   if (!isValidMetadata(chat.metadata)) {
     return { ok: false, error: "Native chat export chat metadata must be an object" };
   }
-  if (!isOptionalTrustedTimestamp(chat.createdAt) || !isOptionalTrustedTimestamp(chat.updatedAt)) {
+  if (
+    !isOptionalNonEmptyString(chat.personaId) ||
+    !isOptionalNonEmptyString(chat.promptPresetId) ||
+    !isOptionalNonEmptyString(chat.connectionId)
+  ) {
+    return { ok: false, error: "Native chat export optional IDs must be non-empty strings" };
+  }
+  if (!isOptionalCanonicalTimestamp(chat.createdAt) || !isOptionalCanonicalTimestamp(chat.updatedAt)) {
     return { ok: false, error: "Native chat export chat timestamps must be valid strings" };
   }
 
@@ -150,7 +157,7 @@ export function validateNativeLanChatExport(
     ) {
       return { ok: false, error: "Native chat export message must include role, characterId, and content" };
     }
-    if (!isOptionalTrustedTimestamp(message.createdAt)) {
+    if (!isOptionalCanonicalTimestamp(message.createdAt)) {
       return { ok: false, error: "Native chat export message createdAt must be a valid string" };
     }
   }
@@ -192,15 +199,27 @@ function isMessageRole(value: unknown): value is MessageRole {
 }
 
 function isNonEmptyStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0);
+  return Array.isArray(value) && value.every(isNonEmptyString);
 }
 
 function isValidMetadata(value: unknown): boolean {
   return value === undefined || value === null || isRecord(value);
 }
 
-function isOptionalTrustedTimestamp(value: unknown): boolean {
-  return value === undefined || value === null || (typeof value === "string" && parseTrustedTimestamp(value) !== null);
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isOptionalNonEmptyString(value: unknown): boolean {
+  return value === undefined || value === null || isNonEmptyString(value);
+}
+
+function isOptionalCanonicalTimestamp(value: unknown): boolean {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== "string") return false;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
 function buildImportedMessages(
