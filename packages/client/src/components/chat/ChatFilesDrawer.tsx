@@ -3,7 +3,7 @@
 // Like SillyTavern's "Manage chat files" feature
 // ──────────────────────────────────────────────
 import { useRef, useState } from "react";
-import { X, Trash2, FileText, MessageSquare, Download, Pencil, Upload } from "lucide-react";
+import { X, Trash2, FileText, MessageSquare, Download, Pencil, Upload, Send } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { showConfirmDialog } from "../../lib/app-dialogs";
@@ -18,6 +18,7 @@ import {
   useUpdateChatMetadata,
 } from "../../hooks/use-chats";
 import { useChatStore } from "../../stores/chat.store";
+import { useUIStore } from "../../stores/ui.store";
 import type { Chat } from "@marinara-engine/shared";
 
 interface ChatFilesDrawerProps {
@@ -34,6 +35,7 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
   const exportChat = useExportChat();
   const setActiveChatId = useChatStore((s) => s.setActiveChatId);
   const activeChatId = useChatStore((s) => s.activeChatId);
+  const openModal = useUIStore((s) => s.openModal);
   const qc = useQueryClient();
   const importInputRef = useRef<HTMLInputElement>(null);
   const [isImporting, setIsImporting] = useState(false);
@@ -156,6 +158,18 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
                 <FileText size="0.8125rem" />
                 Text
               </button>
+              <button
+                onClick={() =>
+                  openModal("send-to-device", {
+                    items: [{ type: "chat", id: chat.id, format: "jsonl" }],
+                    title: "Send Chat to Device",
+                  })
+                }
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] active:scale-[0.98]"
+              >
+                <Send size="0.8125rem" />
+                Send
+              </button>
             </div>
           </div>
           <div className="border-b border-[var(--border)] px-4 py-3">
@@ -229,6 +243,18 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
             >
               <FileText size="0.8125rem" />
               Text
+            </button>
+            <button
+              onClick={() =>
+                openModal("send-to-device", {
+                  items: [{ type: "chat", id: activeChatId ?? chat.id, format: "jsonl" }],
+                  title: "Send Chat to Device",
+                })
+              }
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] active:scale-[0.98]"
+            >
+              <Send size="0.8125rem" />
+              Send
             </button>
           </div>
           <p className="mt-2 text-center text-[0.625rem] text-[var(--muted-foreground)]/60">

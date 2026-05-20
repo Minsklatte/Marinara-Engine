@@ -67,6 +67,7 @@ import {
   ScrollText,
   UserCheck,
   WandSparkles,
+  Smartphone,
 } from "lucide-react";
 import { useClearAllData, useExpungeData, useUpdateChatMetadata, type ExpungeScope } from "../../hooks/use-chats";
 import { useChatStore } from "../../stores/chat.store";
@@ -3270,6 +3271,15 @@ function ImportSettings() {
           )}
         </div>
       )}
+
+      <button
+        type="button"
+        onClick={() => openModal("receive-from-device")}
+        className="flex items-center justify-center gap-2 rounded-xl bg-[var(--secondary)] px-3 py-3 text-xs font-semibold text-[var(--secondary-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] active:scale-[0.98]"
+      >
+        <Smartphone size="1rem" />
+        Receive from Device
+      </button>
 
       {/* Marinara import */}
       <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-pink-500/20 to-orange-500/20 px-3 py-3 text-xs font-semibold ring-1 ring-pink-500/30 transition-all hover:ring-pink-500/50 active:scale-[0.98]">

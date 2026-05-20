@@ -26,6 +26,7 @@ import {
   Tag,
   Pencil,
   Download,
+  Send,
 } from "lucide-react";
 import { useBulkExportChats, useChats, useCreateChat, useDeleteChat, useDeleteChatGroup } from "../../hooks/use-chats";
 import { useChatPresets, useApplyChatPreset } from "../../hooks/use-chat-presets";
@@ -131,6 +132,7 @@ export function ChatSidebar() {
   const editorDirty = useUIStore((s) => s.editorDirty);
   const closeAllDetails = useUIStore((s) => s.closeAllDetails);
   const setSidebarOpen = useUIStore((s) => s.setSidebarOpen);
+  const openModal = useUIStore((s) => s.openModal);
   const setPendingNewChatMode = useChatStore((s) => s.setPendingNewChatMode);
 
   // Folder hooks
@@ -594,6 +596,14 @@ export function ChatSidebar() {
     },
     [selectedChatIds, bulkExportChats, exitMultiSelect],
   );
+
+  const handleBatchSend = useCallback(() => {
+    if (selectedChatIds.size === 0) return;
+    openModal("send-to-device", {
+      items: [...selectedChatIds].map((id) => ({ type: "chat", id, format: "jsonl" })),
+      title: "Send Chats to Device",
+    });
+  }, [selectedChatIds, openModal]);
 
   const handleBatchMoveToFolder = useCallback(
     (folderId: string | null) => {
@@ -1167,6 +1177,14 @@ export function ChatSidebar() {
             >
               <Download size="0.75rem" />
               Export
+            </button>
+            <button
+              onClick={handleBatchSend}
+              disabled={selectedChatIds.size === 0}
+              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs font-medium transition-all hover:bg-[var(--accent)] disabled:opacity-40"
+            >
+              <Send size="0.75rem" />
+              Send
             </button>
             <button
               onClick={handleBatchDelete}

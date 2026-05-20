@@ -44,6 +44,7 @@ import {
   Star,
   Wand2,
   Minus,
+  Send,
 } from "lucide-react";
 import { getCharacterTitle } from "../../lib/character-display";
 import { useUIStore } from "../../stores/ui.store";
@@ -563,6 +564,14 @@ export function CharactersPanel() {
     exitSelectionMode();
   }, [selectedCharacterIds, deleteCharacter, exitSelectionMode]);
 
+  const handleSendSelected = useCallback(() => {
+    if (selectedCharacterIds.size === 0) return;
+    openModal("send-to-device", {
+      items: [...selectedCharacterIds].map((id) => ({ type: "character", id, format: "native" })),
+      title: "Send Characters to Device",
+    });
+  }, [selectedCharacterIds, openModal]);
+
   const handleStartNewChat = useCallback(
     (characterId: string, characterName: string, firstMessage?: string, alternateGreetings?: string[]) => {
       startChatFromCharacter({
@@ -817,6 +826,14 @@ export function CharactersPanel() {
           >
             <Download size="0.6875rem" />
             {exportingSelected ? "Exporting..." : "Export ZIP"}
+          </button>
+          <button
+            onClick={handleSendSelected}
+            disabled={selectedCharacterIds.size === 0}
+            className="inline-flex items-center gap-1 rounded-lg bg-[var(--secondary)] px-2.5 py-1 text-[0.625rem] font-medium text-[var(--secondary-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] disabled:opacity-40"
+          >
+            <Send size="0.6875rem" />
+            Send
           </button>
           <button
             onClick={exitSelectionMode}
