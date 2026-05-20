@@ -990,6 +990,44 @@ test("import-from-offer accepts copy import mode and preserves duplicate behavio
     assert.equal((await characters.list()).length, 2);
   }));
 
+test("import-from-offer rejects invalid explicit import mode before consuming the offer", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const offerId = "route-import-invalid-mode";
+    const downloadToken = "download-token";
+    const secret = "transfer-secret";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: testManifest,
+      encryptedPackage: encryptLanTransferPackage(JSON.stringify(testPackage), secret),
+    });
+
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: "http://127.0.0.1:1",
+      offerId,
+      downloadToken,
+      secret,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/import-from-offer",
+      payload: { transferPayload, options: { importMode: "duplicate" } },
+    });
+
+    try {
+      assert.equal(response.statusCode, 400, response.body);
+      assert.deepEqual(JSON.parse(response.body), { error: "Invalid LAN transfer import mode" });
+      assert.notEqual(lanTransferOfferStore.get(offerId), null);
+    } finally {
+      lanTransferOfferStore.delete(offerId);
+    }
+  }));
+
 test("import-from-offer tries sender origins before download consumption", async () =>
   withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
     const offerId = "route-import-origin-fallback";

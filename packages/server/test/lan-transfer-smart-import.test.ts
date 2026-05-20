@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createFileNativeDB } from "../src/db/file-backed-store.js";
 import { chats as chatsTable } from "../src/db/schema/index.js";
 import { buildLanTransferPackage, importLanTransferPackage } from "../src/services/lan-transfer/lan-transfer-package.js";
+import { analyzeLanTransferManifest } from "../src/services/lan-transfer/lan-transfer-smart-import.js";
 import { createCharactersStorage } from "../src/services/storage/characters.storage.js";
 import { createChatsStorage } from "../src/services/storage/chats.storage.js";
 
@@ -128,6 +129,91 @@ test("zero summary omits empty smart import counters", async () =>
     assert.deepEqual(summary, {
       imported: { chats: 0, characters: 0 },
       skipped: [],
+    });
+  }));
+
+test("preview analysis sanitizes malformed native manifest metadata conservatively", async () =>
+  withDb(async (db) => {
+    const chats = createChatsStorage(db);
+    const existing = await chats.create({ name: "Existing route", mode: "roleplay", characterIds: [] });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "existing-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "user", characterId: null, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+
+    const analysis = await analyzeLanTransferManifest(
+      { db } as any,
+      {
+        version: 1,
+        createdAt: "2026-05-20T00:00:00.000Z",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        totalBytes: 0,
+        items: [
+          null,
+          { type: "character", id: 42, name: "", format: "native", fingerprint: 123, bytes: "bad" },
+          {
+            type: "chat",
+            id: "missing-sync",
+            name: "Missing sync",
+            format: "native",
+            messageCount: "2",
+            characterIds: "not-array",
+            messageFingerprints: ["unused"],
+          },
+          {
+            type: "chat",
+            id: "existing-chat",
+            syncId: "existing-chat",
+            name: "Existing route",
+            format: "native",
+            messageCount: 1,
+            characterIds: [],
+            messageFingerprints: "not-array",
+          },
+          { type: "chat", id: "jsonl-chat", name: "JSONL", format: "jsonl", messageCount: "bad" },
+        ],
+      } as any,
+    );
+
+    assert.deepEqual(analysis, {
+      mode: "smart",
+      actions: [
+        {
+          type: "character",
+          sourceId: "unknown-character",
+          name: "Untitled character",
+          action: "import-copy",
+          reason: "Character fingerprint is missing; will import a copy",
+        },
+        {
+          type: "chat",
+          sourceId: "missing-sync",
+          name: "Missing sync",
+          action: "import-copy",
+          messageCount: 0,
+          reason: "Chat sync metadata is missing; will import a copy",
+        },
+        {
+          type: "chat",
+          sourceId: "existing-chat",
+          name: "Existing route",
+          action: "conflict-copy",
+          targetId: existing.id,
+          messageCount: 1,
+          reason: "Message fingerprints are missing; will import a conflict copy",
+        },
+        {
+          type: "chat",
+          sourceId: "jsonl-chat",
+          name: "JSONL",
+          action: "import-copy",
+          messageCount: 0,
+          reason: "Non-native chat transfers are imported as copies",
+        },
+      ],
     });
   }));
 

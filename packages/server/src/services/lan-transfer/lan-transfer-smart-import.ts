@@ -34,6 +34,37 @@ export interface LanTransferPackageImportOptions {
   importMode?: "smart" | "copy";
 }
 
+interface PreviewCharacterItem {
+  type: "character";
+  id: string;
+  syncId?: string;
+  name: string;
+  format: "native";
+  fingerprint?: string;
+}
+
+interface PreviewJsonlChatItem {
+  type: "chat";
+  id: string;
+  name: string;
+  format: "jsonl";
+  messageCount: number;
+}
+
+interface PreviewNativeChatItem {
+  type: "chat";
+  id: string;
+  syncId?: string;
+  name: string;
+  format: "native";
+  messageCount: number;
+  characterIds?: string[];
+  messageFingerprints?: string[];
+}
+
+type PreviewChatItem = PreviewJsonlChatItem | PreviewNativeChatItem;
+type PreviewManifestItem = PreviewCharacterItem | PreviewChatItem;
+
 export function createEmptyLanTransferImportSummary(): LanTransferImportSummary {
   return {
     imported: { chats: 0, characters: 0 },
@@ -52,7 +83,7 @@ export async function analyzeLanTransferManifest(
   const characterIdMap: Record<string, string> = {};
   const manifestCharacterIds = new Set<string>();
   const characterNames = new Map<string, string>();
-  const items = isRecord(manifest) && Array.isArray(manifest.items) ? manifest.items : [];
+  const items = sanitizePreviewManifestItems(manifest);
 
   for (const item of items) {
     if (item.type !== "character" || item.format !== "native") continue;
@@ -130,7 +161,7 @@ export async function findExactCharacterByFingerprint(
 
 async function analyzeNativeChatManifestItem(
   app: FastifyInstance,
-  item: Extract<LanTransferManifest["items"][number], { type: "chat"; format: "native" }>,
+  item: PreviewChatItem & { format: "native" },
   characterIdMap: Record<string, string>,
   manifestCharacterIds: Set<string>,
   characterNames: Map<string, string>,
@@ -141,12 +172,13 @@ async function analyzeNativeChatManifestItem(
     sourceId: item.id,
     name: item.name,
     messageCount: item.messageCount,
-    linkedCharacterNames,
   };
+  const linkedCharacterContext = linkedCharacterNames ? { linkedCharacterNames } : {};
 
   if (!item.syncId) {
     return {
       ...base,
+      ...linkedCharacterContext,
       action: "import-copy",
       reason: "Chat sync metadata is missing; will import a copy",
     };
@@ -159,6 +191,7 @@ async function analyzeNativeChatManifestItem(
   if (missingDependencies.length > 0) {
     return {
       ...base,
+      ...linkedCharacterContext,
       action: "skip",
       reason: `Missing character mapping for ${missingDependencies.join(", ")}`,
     };
@@ -168,6 +201,7 @@ async function analyzeNativeChatManifestItem(
   if (!existing) {
     return {
       ...base,
+      ...linkedCharacterContext,
       action: "import-copy",
       reason: "No existing synced chat was found",
     };
@@ -176,6 +210,7 @@ async function analyzeNativeChatManifestItem(
   if (!Array.isArray(item.messageFingerprints)) {
     return {
       ...base,
+      ...linkedCharacterContext,
       action: "conflict-copy",
       targetId: existing.id,
       reason: "Message fingerprints are missing; will import a conflict copy",
@@ -186,6 +221,7 @@ async function analyzeNativeChatManifestItem(
   if (missingLocalMappings.length > 0) {
     return {
       ...base,
+      ...linkedCharacterContext,
       action: "conflict-copy",
       targetId: existing.id,
       reason: `Existing chat found, but local character mapping is missing for ${missingLocalMappings.join(", ")}`,
@@ -202,6 +238,7 @@ async function analyzeNativeChatManifestItem(
   if (comparison.kind === "same") {
     return {
       ...base,
+      ...linkedCharacterContext,
       action: "skip",
       targetId: existing.id,
       reason: "Existing synced chat is already up to date",
@@ -210,6 +247,7 @@ async function analyzeNativeChatManifestItem(
   if (comparison.kind === "local_ahead") {
     return {
       ...base,
+      ...linkedCharacterContext,
       action: "skip",
       targetId: existing.id,
       reason: "Existing synced chat already has newer local messages",
@@ -219,6 +257,7 @@ async function analyzeNativeChatManifestItem(
     const appendCount = item.messageFingerprints.length - comparison.appendFrom;
     return {
       ...base,
+      ...linkedCharacterContext,
       action: "append",
       targetId: existing.id,
       appendCount,
@@ -228,6 +267,7 @@ async function analyzeNativeChatManifestItem(
 
   return {
     ...base,
+    ...linkedCharacterContext,
     action: "conflict-copy",
     targetId: existing.id,
     reason: "Existing synced chat history differs; will import a conflict copy",
@@ -388,7 +428,7 @@ function writeCharacterIdMap(
 
 function writePreviewCharacterIdMap(
   characterIdMap: Record<string, string>,
-  item: Extract<LanTransferManifest["items"][number], { type: "character"; format: "native" }>,
+  item: PreviewCharacterItem,
   localId: string,
 ) {
   characterIdMap[item.id] = localId;
@@ -396,7 +436,7 @@ function writePreviewCharacterIdMap(
 }
 
 function rememberManifestCharacter(
-  item: Extract<LanTransferManifest["items"][number], { type: "character"; format: "native" }>,
+  item: PreviewCharacterItem,
   characterIds: Set<string>,
   characterNames: Map<string, string>,
 ) {
@@ -417,7 +457,7 @@ function readLinkedCharacterNames(value: unknown, characterNames: Map<string, st
 }
 
 function buildPreviewNativeChat(
-  item: Extract<LanTransferManifest["items"][number], { type: "chat"; format: "native" }>,
+  item: PreviewChatItem & { format: "native" },
 ): NativeLanChatExport {
   return {
     type: "marinara_lan_chat",
@@ -431,6 +471,68 @@ function buildPreviewNativeChat(
     },
     messages: [],
   };
+}
+
+function sanitizePreviewManifestItems(manifest: unknown): PreviewManifestItem[] {
+  if (!isRecord(manifest) || !Array.isArray(manifest.items)) return [];
+  return manifest.items
+    .map(sanitizePreviewManifestItem)
+    .filter((item): item is PreviewManifestItem => item !== null);
+}
+
+function sanitizePreviewManifestItem(value: unknown): PreviewManifestItem | null {
+  if (!isRecord(value)) return null;
+  if (value.type === "character" && value.format === "native") {
+    return {
+      type: "character",
+      id: readNonEmptyString(value.id) ?? "unknown-character",
+      syncId: readNonEmptyString(value.syncId),
+      name: readNonEmptyString(value.name) ?? "Untitled character",
+      format: "native",
+      fingerprint: readNonEmptyString(value.fingerprint),
+    };
+  }
+
+  if (value.type === "chat" && (value.format === "native" || value.format === "jsonl")) {
+    const id = readNonEmptyString(value.id) ?? "unknown-chat";
+    const name = readNonEmptyString(value.name) ?? "Untitled chat";
+    const messageCount = readNonNegativeInteger(value.messageCount) ?? 0;
+    if (value.format === "jsonl") {
+      return {
+        type: "chat",
+        id,
+        name,
+        format: "jsonl",
+        messageCount,
+      };
+    }
+    return {
+      type: "chat" as const,
+      id,
+      name,
+      format: "native",
+      messageCount,
+      syncId: readNonEmptyString(value.syncId),
+      characterIds: readStringArray(value.characterIds),
+      messageFingerprints: readStringArray(value.messageFingerprints),
+    };
+  }
+
+  return null;
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => readNonEmptyString(entry) !== undefined);
+  return strings.length === value.length ? strings : undefined;
 }
 
 async function importNativeChatSmart(

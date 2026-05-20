@@ -164,6 +164,8 @@ export async function lanTransferRoutes(app: FastifyInstance) {
   app.post("/import-from-offer", async (request, reply) => {
     const payloadResult = getTransferPayload(request.body);
     if (!payloadResult.ok) return reply.code(400).send({ error: payloadResult.error });
+    const importModeResult = getImportMode(request.body);
+    if (!importModeResult.ok) return reply.code(400).send({ error: importModeResult.error });
 
     try {
       const { value: encryptedPackage } = await fetchFromAnySenderOrigin<LanTransferEncryptedPackage>(
@@ -176,7 +178,7 @@ export async function lanTransferRoutes(app: FastifyInstance) {
       if (!validation.ok) return reply.code(400).send({ error: validation.error });
 
       const summary = await importLanTransferPackage(app, validation.package, {
-        importMode: getImportMode(request.body),
+        importMode: importModeResult.importMode,
       });
       return reply.send(summary);
     } catch (err) {
@@ -210,10 +212,18 @@ function getTransferPayload(value: unknown): { ok: true; payload: LanTransferPay
   return { ok: true, payload };
 }
 
-function getImportMode(value: unknown): "smart" | "copy" {
+function getImportMode(
+  value: unknown,
+): { ok: true; importMode: "smart" | "copy" } | { ok: false; error: string } {
   const body = readBody(value);
   const options = isRecord(body.options) ? body.options : {};
-  return options.importMode === "copy" ? "copy" : "smart";
+  if (!Object.prototype.hasOwnProperty.call(options, "importMode")) {
+    return { ok: true, importMode: "smart" };
+  }
+  if (options.importMode === "smart" || options.importMode === "copy") {
+    return { ok: true, importMode: options.importMode };
+  }
+  return { ok: false, error: "Invalid LAN transfer import mode" };
 }
 
 function getRequestOrigin(request: FastifyRequest): string {
