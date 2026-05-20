@@ -79,6 +79,11 @@ function getActionLabel(action?: LanTransferPreviewAction) {
   return "Will import a copy";
 }
 
+function getVisibleActionLabel(importAsCopies: boolean, action?: LanTransferPreviewAction) {
+  if (importAsCopies) return "Will import a copy";
+  return getActionLabel(action);
+}
+
 function getActionKey(action: LanTransferPreviewAction) {
   return `${action.type}:${action.sourceId}`;
 }
@@ -487,7 +492,8 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
             <div className="max-h-64 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--background)]">
               {preview.manifest.items.map((item) => {
                 const action = actionByItemKey.get(`${item.type}:${item.id}`);
-                const actionLabel = getActionLabel(action);
+                const itemTypeLabel = getItemTypeLabel(item, action);
+                const actionLabel = getVisibleActionLabel(importAsCopies, action);
 
                 return (
                   <div
@@ -495,12 +501,15 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
                     className="flex items-center justify-between gap-3 border-b border-[var(--border)]/60 px-3 py-2 last:border-b-0 max-sm:flex-col max-sm:items-start"
                   >
                     <span className="min-w-0 truncate text-sm font-medium text-[var(--foreground)]">{item.name}</span>
-                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start">
-                      <span className="rounded-md bg-[var(--muted)] px-2 py-1 text-xs font-semibold text-[var(--muted-foreground)]">
-                        {getItemTypeLabel(item, action)}
+                    <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start sm:max-w-[70%]">
+                      <span
+                        title={itemTypeLabel}
+                        className="max-w-full truncate rounded-md bg-[var(--muted)] px-2 py-1 text-xs font-semibold text-[var(--muted-foreground)] sm:max-w-72"
+                      >
+                        {itemTypeLabel}
                       </span>
                       {actionLabel && (
-                        <span className="rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 px-2 py-1 text-xs font-semibold text-[var(--foreground)]">
+                        <span className="max-w-full truncate rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 px-2 py-1 text-xs font-semibold text-[var(--foreground)] sm:max-w-72">
                           {actionLabel}
                         </span>
                       )}
