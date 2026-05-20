@@ -8,7 +8,6 @@ import {
 } from "@marinara-engine/shared";
 import { serializeChatTranscript } from "../export/chat-export.service.js";
 import { buildNativeCharacterEnvelope } from "../export/character-export.service.js";
-import { importMarinara } from "../import/marinara.importer.js";
 import { importSTChat } from "../import/st-chat.importer.js";
 import {
   buildNativeLanChatExport,
@@ -22,6 +21,11 @@ import {
   readLanTransferSyncId,
   withLanTransferCharacterSyncMetadata,
 } from "./lan-transfer-fingerprints.js";
+import {
+  createEmptyLanTransferImportSummary,
+  importLanTransferCharacters,
+  type LanTransferPackageImportOptions,
+} from "./lan-transfer-smart-import.js";
 import { createCharacterGalleryStorage } from "../storage/character-gallery.storage.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
@@ -247,46 +251,10 @@ export function validateLanTransferPackage(value: unknown, options: ValidationOp
 export async function importLanTransferPackage(
   app: FastifyInstance,
   pkg: LanTransferPackage,
+  options: LanTransferPackageImportOptions = {},
 ): Promise<LanTransferImportSummary> {
-  const summary: LanTransferImportSummary = {
-    imported: {
-      chats: 0,
-      characters: 0,
-    },
-    skipped: [],
-  };
-  const characterIdMap: Record<string, string> = {};
-
-  for (const item of pkg.items) {
-    try {
-      if (item.type === "character") {
-        const result = await importMarinara(item.envelope as any, app.db);
-        if (result.success) {
-          summary.imported.characters += 1;
-          if (result.id) characterIdMap[item.id] = result.id;
-        } else {
-          summary.skipped.push({ type: item.type, name: item.name, reason: result.error ?? "Import failed" });
-        }
-        continue;
-      }
-
-      if (item.type === "chat") {
-        continue;
-      }
-
-      summary.skipped.push({ type: (item as { type?: string }).type ?? "unknown", reason: "Unsupported item type" });
-    } catch (err) {
-      summary.skipped.push({
-        type: (item as { type?: string }).type ?? "unknown",
-        name: isRecord(item) && typeof item.name === "string" ? item.name : undefined,
-        reason: err instanceof Error ? err.message : "Import failed",
-      });
-    }
-  }
-
-  if (Object.keys(characterIdMap).length > 0) {
-    summary.characterIdMap = characterIdMap;
-  }
+  const summary = createEmptyLanTransferImportSummary();
+  const characterIdMap = await importLanTransferCharacters(app, pkg, summary, options);
 
   for (const item of pkg.items) {
     try {
