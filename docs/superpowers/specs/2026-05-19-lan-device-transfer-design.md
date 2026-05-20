@@ -12,6 +12,7 @@ The first target setup is a Linux Marinara instance and a separate Android/Termu
 - No automatic sync.
 - No account system.
 - No background device discovery for MVP.
+- No LAN scanning. Phase 2 sender-origin self-discovery is limited to bounded origins advertised by the sender in the transfer payload.
 - No in-app camera requirement for MVP.
 - No full profile transfer in MVP.
 - No conflict resolution beyond ordinary import behavior.
@@ -50,12 +51,14 @@ The sender never pushes directly into the receiver. This reduces the receiver-si
 1. User opens a chat/character list or settings import/export panel.
 2. User chooses `Send to Device`.
 3. User selects one or more supported items:
-   - Chats as JSONL.
+   - Chats in native LAN format by default, including referenced character cards and media dependencies.
+   - Chats as JSONL only for legacy or explicit export flows.
    - Characters as native Marinara JSON.
 4. Marinara creates a temporary transfer offer.
 5. Sender UI shows:
    - Copyable transfer payload.
    - QR code containing the same payload.
+   - Sender origin selected for the offer.
    - Expiration countdown.
    - One-time-use status.
    - Cancel button.
@@ -68,10 +71,11 @@ The sender never pushes directly into the receiver. This reduces the receiver-si
 3. Receiver sends the payload to its own local backend.
 4. Receiver backend validates the sender URL against LAN-only rules and fetches the manifest from the sender.
 5. Receiver shows a preview:
-   - Sender host.
+   - Sender origin that responded.
    - Transfer type.
    - Chat count and names.
    - Character count and names.
+   - Bundled character cards referenced by selected chats.
    - Approximate payload size.
    - Expiration status.
 6. User clicks `Import`.
@@ -89,6 +93,7 @@ Example:
   "type": "marinara-lan-transfer",
   "version": 1,
   "from": "http://192.168.1.50:7860",
+  "origins": ["http://192.168.1.50:7860", "http://marinara.local:7860"],
   "offerId": "01HZ7P5Q7JYH3K8K1E6Q2F4W8D",
   "downloadToken": "base64url-random-128-bit-token",
   "secret": "base64url-random-256-bit-secret"
@@ -98,6 +103,8 @@ Example:
 The `downloadToken` authorizes access to the temporary offer. The `secret` decrypts the package. Keeping these separate lets the receiver prove it has the offer payload without sending the decryption key back to the sender.
 
 The `from` field is an origin only: scheme, host, and optional port. It must not include credentials, a path, a query string, or a fragment.
+
+Phase 2 payloads may include bounded `origins` alongside backward-compatible `from`. These origins are sender-advertised self-discovery candidates, not LAN scanning. Receivers cap the candidate list, try candidates in order, validate every candidate against the LAN/SSRF policy before each fetch, and return the origin that actually worked in preview/import responses.
 
 The payload may later be represented as a `marinara-transfer:` URI, but raw JSON is easier to debug for MVP. A URI wrapper must still carry the same fields.
 
@@ -148,6 +155,7 @@ Controls:
   - Revalidate the resolved address after redirects, or disable redirects for MVP.
   - Apply short timeouts and small response-size limits.
 - Existing Basic Auth and admin-secret checks stay intact for normal app APIs and for creating/cancelling offers. Manifest and download endpoints are separately authorized by the high-entropy `downloadToken` and expose only the prepared temporary offer.
+- When global Basic Auth is enabled, only the token-gated manifest and download endpoints are exempt from that global challenge. Normal app APIs and offer creation/cancellation remain protected.
 - This feature must not set `ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK` or bypass normal app auth globally.
 - Offer endpoints do not list active offers.
 
@@ -181,6 +189,8 @@ Response:
   offerId: string;
   transferPayload: string;
   expiresAt: string;
+  from: string;
+  origins?: string[];
   manifest: LanTransferManifest;
 }
 ```
@@ -282,10 +292,12 @@ Response:
 
 ```ts
 {
+  from: string;
   imported: {
     chats: number;
     characters: number;
   };
+  characterIdMap?: Record<string, string>;
   skipped: Array<{ type: string; name?: string; reason: string }>;
 }
 ```
@@ -299,6 +311,7 @@ interface LanTransferPayload {
   type: "marinara-lan-transfer";
   version: 1;
   from: string;
+  origins?: string[];
   offerId: string;
   downloadToken: string;
   secret: string;
@@ -311,6 +324,7 @@ interface LanTransferManifest {
   sourceApp: "Marinara Engine";
   sourceVersion: string;
   items: Array<
+    | { type: "chat"; id: string; name: string; format: "native"; messageCount: number; characterCount: number; bytes: number }
     | { type: "chat"; id: string; name: string; format: "jsonl"; messageCount: number; bytes: number }
     | { type: "character"; id: string; name: string; format: "native"; bytes: number }
   >;
@@ -321,11 +335,14 @@ interface LanTransferPackage {
   version: 1;
   manifest: LanTransferManifest;
   items: Array<
+    | { type: "chat"; id: string; name: string; format: "native"; chat: unknown }
     | { type: "chat"; id: string; name: string; format: "jsonl"; content: string }
     | { type: "character"; id: string; name: string; format: "native"; envelope: unknown }
   >;
 }
 ```
+
+Native chat packages are the default for LAN send. They bundle referenced character cards and media dependencies so the receiving instance can import a self-contained chat. JSONL remains supported for legacy compatibility and explicit export paths.
 
 ## Frontend UX
 
@@ -373,6 +390,8 @@ Controls:
 - Reject unknown item types.
 - Reject oversized package content.
 - Reuse existing chat and character import functions where possible.
+- Import package items in dependency order: characters first, then chats. When a chat references a transferred character, remap the old character ID to the newly imported character ID.
+- Skip or fail closed on unmapped dependencies instead of producing broken chat-character links.
 - Do not execute embedded data.
 - Do not overwrite existing chats/characters in MVP; import as new copies or branches.
 - Show a preview before import.
