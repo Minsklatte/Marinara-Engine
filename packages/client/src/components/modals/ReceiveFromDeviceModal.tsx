@@ -19,8 +19,21 @@ function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
-function getItemTypeLabel(type: string) {
-  return type === "chat" ? "Chat" : type === "character" ? "Character" : type;
+type PreviewManifestItem = LanTransferPreviewResponse["manifest"]["items"][number];
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function getBundledCharacterCount(item: PreviewManifestItem) {
+  return item.type === "chat" && item.format === "native" && item.characterCount > 0 ? item.characterCount : 0;
+}
+
+function getItemTypeLabel(item: PreviewManifestItem) {
+  if (item.type === "character") return "Character";
+
+  const bundledCharacters = getBundledCharacterCount(item);
+  return bundledCharacters > 0 ? `Chat + ${pluralize(bundledCharacters, "card")}` : "Chat";
 }
 
 function getImportSummary(summary: LanTransferImportSummary) {
@@ -61,11 +74,28 @@ function normalizePreviewResponse(value: unknown): LanTransferPreviewResponse | 
     if (typeof bytes !== "number" || !Number.isFinite(bytes)) return null;
 
     if (type === "chat") {
-      if (format !== "jsonl" || typeof item.messageCount !== "number" || !Number.isFinite(item.messageCount)) {
-        return null;
+      if (typeof item.messageCount !== "number" || !Number.isFinite(item.messageCount)) return null;
+
+      if (format === "jsonl") {
+        items.push({ type: "chat", id, name, format: "jsonl", messageCount: item.messageCount, bytes });
+        continue;
       }
-      items.push({ type: "chat", id, name, format: "jsonl", messageCount: item.messageCount, bytes });
-      continue;
+
+      if (format === "native") {
+        if (typeof item.characterCount !== "number" || !Number.isFinite(item.characterCount)) return null;
+        items.push({
+          type: "chat",
+          id,
+          name,
+          format: "native",
+          messageCount: item.messageCount,
+          characterCount: item.characterCount,
+          bytes,
+        });
+        continue;
+      }
+
+      return null;
     }
 
     if (type === "character") {
@@ -119,10 +149,12 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
     if (!preview) return null;
     const chats = preview.manifest.items.filter((item) => item.type === "chat").length;
     const characters = preview.manifest.items.filter((item) => item.type === "character").length;
+    const bundledCharacters = preview.manifest.items.reduce((total, item) => total + getBundledCharacterCount(item), 0);
     const parts: string[] = [];
 
-    if (chats > 0) parts.push(`${chats} ${chats === 1 ? "chat" : "chats"}`);
-    if (characters > 0) parts.push(`${characters} ${characters === 1 ? "character" : "characters"}`);
+    if (chats > 0) parts.push(pluralize(chats, "chat"));
+    if (characters > 0) parts.push(`${pluralize(characters, "character")} as standalone items`);
+    if (bundledCharacters > 0) parts.push(`${pluralize(bundledCharacters, "card")} bundled with chats`);
 
     return parts.length > 0 ? parts.join(" and ") : "No importable items";
   }, [preview]);
@@ -301,7 +333,7 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
                 >
                   <span className="min-w-0 truncate text-sm font-medium text-[var(--foreground)]">{item.name}</span>
                   <span className="shrink-0 rounded-md bg-[var(--muted)] px-2 py-1 text-xs font-semibold text-[var(--muted-foreground)]">
-                    {getItemTypeLabel(item.type)}
+                    {getItemTypeLabel(item)}
                   </span>
                 </div>
               ))}

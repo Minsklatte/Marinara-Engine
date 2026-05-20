@@ -3,7 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Clipboard, Loader2, QrCode, TriangleAlert, XCircle } from "lucide-react";
 import QRCode from "qrcode";
 import { toast } from "sonner";
-import type { LanTransferCreateOfferResponse, LanTransferItemRequest } from "@marinara-engine/shared";
+import {
+  LAN_TRANSFER_TYPE,
+  LAN_TRANSFER_VERSION,
+  type LanTransferCreateOfferResponse,
+  type LanTransferItemRequest,
+  type LanTransferPayload,
+} from "@marinara-engine/shared";
 import { useCancelLanTransferOffer, useCreateLanTransferOffer } from "../../hooks/use-lan-transfer";
 import { Modal } from "../ui/Modal";
 
@@ -25,6 +31,73 @@ function getItemSummary(items: LanTransferItemRequest[]) {
   return parts.length > 0 ? parts.join(" and ") : "No chats or characters";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOriginOnlyHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.username === "" &&
+      url.password === "" &&
+      url.pathname === "/" &&
+      url.search === "" &&
+      url.hash === "" &&
+      value === url.origin
+    );
+  } catch {
+    return false;
+  }
+}
+
+function parseLanTransferPayload(raw: string): LanTransferPayload | null {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+
+  if (!isRecord(parsed)) return null;
+
+  const { type, version, from, origins, offerId, downloadToken, secret } = parsed;
+  if (
+    type !== LAN_TRANSFER_TYPE ||
+    version !== LAN_TRANSFER_VERSION ||
+    typeof from !== "string" ||
+    typeof offerId !== "string" ||
+    typeof downloadToken !== "string" ||
+    typeof secret !== "string" ||
+    !isOriginOnlyHttpUrl(from)
+  ) {
+    return null;
+  }
+
+  const normalizedOrigins = Array.isArray(origins)
+    ? Array.from(
+        new Set(
+          origins.filter((origin): origin is string => typeof origin === "string" && origin.trim().length > 0),
+        ),
+      )
+        .map((origin) => origin.trim())
+        .filter(isOriginOnlyHttpUrl)
+        .slice(0, 5)
+    : [];
+
+  return {
+    type: LAN_TRANSFER_TYPE,
+    version: LAN_TRANSFER_VERSION,
+    from,
+    origins: normalizedOrigins.length > 0 ? normalizedOrigins : [from],
+    offerId,
+    downloadToken,
+    secret,
+  };
+}
+
 export function SendToDeviceModal({ open, onClose, items, title = "Send to Device" }: SendToDeviceModalProps) {
   const { mutateAsync: createOfferAsync, reset: resetCreateOffer } = useCreateLanTransferOffer();
   const { mutateAsync: cancelOfferAsync, reset: resetCancelOffer } = useCancelLanTransferOffer();
@@ -41,6 +114,11 @@ export function SendToDeviceModal({ open, onClose, items, title = "Send to Devic
 
   const itemKey = useMemo(() => JSON.stringify(items), [items]);
   const itemSummary = useMemo(() => getItemSummary(items), [items]);
+  const offerPayload = useMemo(
+    () => (offer?.transferPayload ? parseLanTransferPayload(offer.transferPayload) : null),
+    [offer?.transferPayload],
+  );
+  const senderOrigin = offerPayload?.origins?.[0] ?? offerPayload?.from ?? null;
   const hasItems = items.length > 0;
 
   const cancelOfferById = useCallback(
@@ -160,6 +238,17 @@ export function SendToDeviceModal({ open, onClose, items, title = "Send to Devic
     }
   }, [offer?.transferPayload]);
 
+  const handleCopyOrigin = useCallback(async () => {
+    if (!senderOrigin) return;
+
+    try {
+      await navigator.clipboard.writeText(senderOrigin);
+      toast.success("Sender address copied.");
+    } catch {
+      toast.error("Could not copy automatically. Select the address and copy it manually.");
+    }
+  }, [senderOrigin]);
+
   const handleClose = useCallback(() => {
     activeCreateRequestIdRef.current += 1;
     latestItemKeyRef.current = null;
@@ -252,8 +341,33 @@ export function SendToDeviceModal({ open, onClose, items, title = "Send to Devic
               </p>
             )}
 
+            {senderOrigin && (
+              <div className="space-y-2 rounded-lg border border-[var(--border)]/60 bg-[var(--card)]/70 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs font-semibold uppercase text-[var(--muted-foreground)]">
+                    Sender address
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyOrigin()}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-xs font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
+                  >
+                    <Clipboard size="0.8125rem" />
+                    Copy Address
+                  </button>
+                </div>
+                <input
+                  readOnly
+                  value={senderOrigin}
+                  className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-xs text-[var(--foreground)] outline-none focus:ring-2 focus:ring-[var(--primary)]/40"
+                />
+              </div>
+            )}
+
             <label className="block space-y-2">
-              <span className="text-xs font-semibold uppercase text-[var(--muted-foreground)]">Transfer payload</span>
+              <span className="text-xs font-semibold uppercase text-[var(--muted-foreground)]">
+                Transfer payload (fallback)
+              </span>
               <textarea
                 readOnly
                 value={offer.transferPayload}
@@ -271,7 +385,7 @@ export function SendToDeviceModal({ open, onClose, items, title = "Send to Devic
             className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 py-2 text-sm font-semibold text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Clipboard size="1rem" />
-            Copy
+            Copy Payload
           </button>
           <button
             type="button"

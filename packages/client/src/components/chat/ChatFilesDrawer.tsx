@@ -161,7 +161,7 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
               <button
                 onClick={() =>
                   openModal("send-to-device", {
-                    items: [{ type: "chat", id: chat.id, format: "jsonl" }],
+                    items: [{ type: "chat", id: chat.id }],
                     title: "Send Chat to Device",
                   })
                 }
@@ -247,7 +247,7 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
             <button
               onClick={() =>
                 openModal("send-to-device", {
-                  items: [{ type: "chat", id: activeChatId ?? chat.id, format: "jsonl" }],
+                  items: [{ type: "chat", id: activeChatId ?? chat.id }],
                   title: "Send Chat to Device",
                 })
               }

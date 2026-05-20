@@ -616,7 +616,7 @@ export function ChatSidebar() {
     if (selectedChatIds.size === 0) return;
     const chatIds = resolveBatchSendChatIds();
     openModal("send-to-device", {
-      items: chatIds.map((id) => ({ type: "chat", id, format: "jsonl" })),
+      items: chatIds.map((id) => ({ type: "chat", id })),
       title: "Send Chats to Device",
     });
   }, [selectedChatIds, resolveBatchSendChatIds, openModal]);

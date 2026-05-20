@@ -70,8 +70,12 @@ function getLanTransferItems(value: unknown): LanTransferItemRequest[] {
     if (!id) continue;
 
     if (raw.type === "chat") {
-      if (raw.format !== undefined && raw.format !== "jsonl") continue;
-      items.push(raw.format === "jsonl" ? { type: "chat", id, format: "jsonl" } : { type: "chat", id });
+      if (raw.format !== undefined && raw.format !== "jsonl" && raw.format !== "native") continue;
+      items.push(
+        raw.format === "jsonl" || raw.format === "native"
+          ? { type: "chat", id, format: raw.format }
+          : { type: "chat", id },
+      );
       continue;
     }
 
