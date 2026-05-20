@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileNativeDB } from "../src/db/file-backed-store.js";
 import { chats as chatsTable } from "../src/db/schema/index.js";
+import { fingerprintLanTransferMessage } from "../src/services/lan-transfer/lan-transfer-fingerprints.js";
 import { buildLanTransferPackage, importLanTransferPackage } from "../src/services/lan-transfer/lan-transfer-package.js";
 import { analyzeLanTransferManifest } from "../src/services/lan-transfer/lan-transfer-smart-import.js";
 import { createCharactersStorage } from "../src/services/storage/characters.storage.js";
@@ -215,6 +216,114 @@ test("preview analysis sanitizes malformed native manifest metadata conservative
         },
       ],
     });
+  }));
+
+test("preview analysis does not treat malformed native chat characterIds as empty dependencies", async () =>
+  withDb(async (db) => {
+    const chats = createChatsStorage(db);
+    const existing = await chats.create({ name: "Existing route", mode: "roleplay", characterIds: [] });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "bad-dependency-chat" } }, {
+      touchUpdatedAt: false,
+    });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "user", characterId: null, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+    const fingerprint = fingerprintLanTransferMessage({
+      role: "user",
+      characterId: null,
+      content: "One",
+      createdAt: "2026-05-20T12:00:00.000Z",
+    });
+
+    const analysis = await analyzeLanTransferManifest(
+      { db } as any,
+      {
+        version: 1,
+        createdAt: "2026-05-20T00:00:00.000Z",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        totalBytes: 0,
+        items: [
+          {
+            type: "chat",
+            id: "bad-dependency-chat",
+            syncId: "bad-dependency-chat",
+            name: "Existing route",
+            format: "native",
+            messageCount: 1,
+            characterIds: "__proto__",
+            messageFingerprints: [fingerprint],
+          },
+        ],
+      } as any,
+    );
+
+    assert.deepEqual(analysis.actions, [
+      {
+        type: "chat",
+        sourceId: "bad-dependency-chat",
+        name: "Existing route",
+        action: "conflict-copy",
+        targetId: existing.id,
+        messageCount: 1,
+        reason: "Character dependency metadata is missing; will import a conflict copy",
+      },
+    ]);
+  }));
+
+test("preview analysis treats prototype-key character dependencies as unmapped when absent", async () =>
+  withDb(async (db) => {
+    const chats = createChatsStorage(db);
+    const existing = await chats.create({ name: "Prototype route", mode: "roleplay", characterIds: [] });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "prototype-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "user", characterId: null, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+    const fingerprint = fingerprintLanTransferMessage({
+      role: "user",
+      characterId: null,
+      content: "One",
+      createdAt: "2026-05-20T12:00:00.000Z",
+    });
+
+    const analysis = await analyzeLanTransferManifest(
+      { db } as any,
+      {
+        version: 1,
+        createdAt: "2026-05-20T00:00:00.000Z",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        totalBytes: 0,
+        items: [
+          {
+            type: "chat",
+            id: "prototype-chat",
+            syncId: "prototype-chat",
+            name: "Prototype route",
+            format: "native",
+            messageCount: 1,
+            characterIds: ["__proto__"],
+            messageFingerprints: [fingerprint],
+          },
+        ],
+      } as any,
+    );
+
+    assert.deepEqual(analysis.actions, [
+      {
+        type: "chat",
+        sourceId: "prototype-chat",
+        name: "Prototype route",
+        action: "skip",
+        messageCount: 1,
+        linkedCharacterNames: ["__proto__"],
+        reason: "Missing character mapping for __proto__",
+      },
+    ]);
   }));
 
 test("smart import appends missing messages to an existing synced chat and keeps local settings", async () =>

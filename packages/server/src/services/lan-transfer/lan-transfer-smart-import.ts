@@ -59,11 +59,13 @@ interface PreviewNativeChatItem {
   format: "native";
   messageCount: number;
   characterIds?: string[];
+  hasValidCharacterIds: boolean;
   messageFingerprints?: string[];
 }
 
 type PreviewChatItem = PreviewJsonlChatItem | PreviewNativeChatItem;
 type PreviewManifestItem = PreviewCharacterItem | PreviewChatItem;
+type CharacterIdMap = Map<string, string>;
 
 export function createEmptyLanTransferImportSummary(): LanTransferImportSummary {
   return {
@@ -80,7 +82,7 @@ export async function analyzeLanTransferManifest(
   manifest: LanTransferManifest,
 ): Promise<LanTransferPreviewAnalysis> {
   const actions: LanTransferPreviewAction[] = [];
-  const characterIdMap: Record<string, string> = {};
+  const characterIdMap: CharacterIdMap = new Map();
   const manifestCharacterIds = new Set<string>();
   const characterNames = new Map<string, string>();
   const items = sanitizePreviewManifestItems(manifest);
@@ -162,7 +164,7 @@ export async function findExactCharacterByFingerprint(
 async function analyzeNativeChatManifestItem(
   app: FastifyInstance,
   item: PreviewChatItem & { format: "native" },
-  characterIdMap: Record<string, string>,
+  characterIdMap: CharacterIdMap,
   manifestCharacterIds: Set<string>,
   characterNames: Map<string, string>,
 ): Promise<LanTransferPreviewAction> {
@@ -185,8 +187,27 @@ async function analyzeNativeChatManifestItem(
   }
 
   const characterIds = Array.isArray(item.characterIds) ? item.characterIds : [];
+  if (!item.hasValidCharacterIds) {
+    const existing = await findChatBySyncId(app, item.syncId);
+    if (!existing) {
+      return {
+        ...base,
+        ...linkedCharacterContext,
+        action: "import-copy",
+        reason: "Character dependency metadata is missing; will import a copy",
+      };
+    }
+    return {
+      ...base,
+      ...linkedCharacterContext,
+      action: "conflict-copy",
+      targetId: existing.id,
+      reason: "Character dependency metadata is missing; will import a conflict copy",
+    };
+  }
+
   const missingDependencies = characterIds.filter(
-    (characterId) => !characterIdMap[characterId] && !manifestCharacterIds.has(characterId),
+    (characterId) => !characterIdMap.has(characterId) && !manifestCharacterIds.has(characterId),
   );
   if (missingDependencies.length > 0) {
     return {
@@ -217,7 +238,7 @@ async function analyzeNativeChatManifestItem(
     };
   }
 
-  const missingLocalMappings = characterIds.filter((characterId) => !characterIdMap[characterId]);
+  const missingLocalMappings = characterIds.filter((characterId) => !characterIdMap.has(characterId));
   if (missingLocalMappings.length > 0) {
     return {
       ...base,
@@ -279,8 +300,8 @@ export async function importLanTransferCharacters(
   pkg: LanTransferPackage,
   summary: LanTransferImportSummary,
   options: LanTransferPackageImportOptions,
-): Promise<Record<string, string>> {
-  const characterIdMap: Record<string, string> = {};
+): Promise<CharacterIdMap> {
+  const characterIdMap: CharacterIdMap = new Map();
   const smart = (options.importMode ?? "smart") === "smart";
 
   for (const item of pkg.items) {
@@ -322,14 +343,14 @@ export async function importLanTransferCharacters(
     }
   }
 
-  if (Object.keys(characterIdMap).length > 0) summary.characterIdMap = characterIdMap;
+  if (characterIdMap.size > 0) summary.characterIdMap = Object.fromEntries(characterIdMap);
   return characterIdMap;
 }
 
 export async function importLanTransferChats(
   app: FastifyInstance,
   pkg: LanTransferPackage,
-  characterIdMap: Record<string, string>,
+  characterIdMap: CharacterIdMap,
   summary: LanTransferImportSummary,
   options: LanTransferPackageImportOptions,
 ) {
@@ -418,21 +439,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function writeCharacterIdMap(
-  characterIdMap: Record<string, string>,
+  characterIdMap: CharacterIdMap,
   item: Extract<LanTransferPackage["items"][number], { type: "character" }>,
   localId: string,
 ) {
-  characterIdMap[item.id] = localId;
-  if (item.syncId) characterIdMap[item.syncId] = localId;
+  characterIdMap.set(item.id, localId);
+  if (item.syncId) characterIdMap.set(item.syncId, localId);
 }
 
 function writePreviewCharacterIdMap(
-  characterIdMap: Record<string, string>,
+  characterIdMap: CharacterIdMap,
   item: PreviewCharacterItem,
   localId: string,
 ) {
-  characterIdMap[item.id] = localId;
-  if (item.syncId) characterIdMap[item.syncId] = localId;
+  characterIdMap.set(item.id, localId);
+  if (item.syncId) characterIdMap.set(item.syncId, localId);
 }
 
 function rememberManifestCharacter(
@@ -506,6 +527,7 @@ function sanitizePreviewManifestItem(value: unknown): PreviewManifestItem | null
         messageCount,
       };
     }
+    const characterIds = readStringArray(value.characterIds);
     return {
       type: "chat" as const,
       id,
@@ -513,7 +535,8 @@ function sanitizePreviewManifestItem(value: unknown): PreviewManifestItem | null
       format: "native",
       messageCount,
       syncId: readNonEmptyString(value.syncId),
-      characterIds: readStringArray(value.characterIds),
+      characterIds,
+      hasValidCharacterIds: characterIds !== undefined,
       messageFingerprints: readStringArray(value.messageFingerprints),
     };
   }
@@ -538,7 +561,7 @@ function readStringArray(value: unknown): string[] | undefined {
 async function importNativeChatSmart(
   app: FastifyInstance,
   item: Extract<LanTransferPackage["items"][number], { type: "chat"; format: "native" }>,
-  characterIdMap: Record<string, string>,
+  characterIdMap: CharacterIdMap,
   summary: LanTransferImportSummary,
 ) {
   const validation = validateNativeLanChatExport(item.chat);
@@ -547,7 +570,7 @@ async function importNativeChatSmart(
     return;
   }
 
-  const missingCharacterIds = collectNativeLanChatCharacterIds(validation.chat).filter((id) => !characterIdMap[id]);
+  const missingCharacterIds = collectNativeLanChatCharacterIds(validation.chat).filter((id) => !characterIdMap.has(id));
   if (missingCharacterIds.length > 0) {
     summary.skipped.push({
       type: item.type,
@@ -559,7 +582,9 @@ async function importNativeChatSmart(
 
   const existing = await findChatBySyncId(app, validation.chat.chat.syncId);
   if (!existing) {
-    const result = await importNativeLanChat(app.db, validation.chat, characterIdMap, { preserveSyncId: true });
+    const result = await importNativeLanChat(app.db, validation.chat, toCharacterIdRecord(characterIdMap), {
+      preserveSyncId: true,
+    });
     if (result.success) {
       summary.imported.chats += 1;
       writeChatIdMap(summary, item.id, result.id, item.syncId);
@@ -580,7 +605,11 @@ async function importNativeChatSmart(
 
   if (comparison.kind === "incoming_extends_local") {
     const chats = createChatsStorage(app.db);
-    const appendedMessages = buildImportedMessages(validation.chat.messages, characterIdMap, comparison.appendFrom);
+    const appendedMessages = buildImportedMessages(
+      validation.chat.messages,
+      toCharacterIdRecord(characterIdMap),
+      comparison.appendFrom,
+    );
     await chats.createMessagesBatch(existing.id, appendedMessages);
     const lastAppendedAt = appendedMessages.at(-1)?.createdAt;
     if (lastAppendedAt && existing.updatedAt > lastAppendedAt) {
@@ -592,7 +621,7 @@ async function importNativeChatSmart(
     return;
   }
 
-  const result = await importNativeLanChat(app.db, validation.chat, characterIdMap, {
+  const result = await importNativeLanChat(app.db, validation.chat, toCharacterIdRecord(characterIdMap), {
     nameSuffix: " (LAN conflict copy)",
   });
   if (result.success) {
@@ -606,7 +635,7 @@ async function importNativeChatSmart(
 async function importChatAsCopy(
   app: FastifyInstance,
   item: Extract<LanTransferPackage["items"][number], { type: "chat" }>,
-  characterIdMap: Record<string, string>,
+  characterIdMap: CharacterIdMap,
   summary: LanTransferImportSummary,
   options: LanTransferPackageImportOptions,
 ) {
@@ -617,7 +646,7 @@ async function importChatAsCopy(
       return;
     }
 
-    const missingCharacterIds = collectNativeLanChatCharacterIds(validation.chat).filter((id) => !characterIdMap[id]);
+    const missingCharacterIds = collectNativeLanChatCharacterIds(validation.chat).filter((id) => !characterIdMap.has(id));
     if (missingCharacterIds.length > 0) {
       summary.skipped.push({
         type: item.type,
@@ -627,7 +656,7 @@ async function importChatAsCopy(
       return;
     }
 
-    const result = await importNativeLanChat(app.db, validation.chat, characterIdMap);
+    const result = await importNativeLanChat(app.db, validation.chat, toCharacterIdRecord(characterIdMap));
     if (result.success) {
       summary.imported.chats += 1;
       if ((options.importMode ?? "smart") === "copy") summary.copied!.chats += 1;
@@ -663,7 +692,7 @@ async function getLocalMessageFingerprints(
   app: FastifyInstance,
   chatId: string,
   incomingChat: NativeLanChatExport,
-  characterIdMap: Record<string, string>,
+  characterIdMap: CharacterIdMap,
 ): Promise<string[]> {
   const chats = createChatsStorage(app.db);
   const incomingCharacterIds = buildIncomingCharacterIdsByLocalId(incomingChat, characterIdMap);
@@ -687,14 +716,18 @@ async function getLocalMessageFingerprints(
 
 function buildIncomingCharacterIdsByLocalId(
   incomingChat: NativeLanChatExport,
-  characterIdMap: Record<string, string>,
+  characterIdMap: CharacterIdMap,
 ): Map<string, string> {
   const map = new Map<string, string>();
   for (const sourceId of collectNativeLanChatCharacterIds(incomingChat)) {
-    const localId = characterIdMap[sourceId];
+    const localId = characterIdMap.get(sourceId);
     if (localId && !map.has(localId)) map.set(localId, sourceId);
   }
   return map;
+}
+
+function toCharacterIdRecord(characterIdMap: CharacterIdMap): Record<string, string> {
+  return Object.assign(Object.create(null), Object.fromEntries(characterIdMap)) as Record<string, string>;
 }
 
 async function buildLocalCharacterSyncIdMap(
