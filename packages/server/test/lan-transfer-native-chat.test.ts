@@ -58,6 +58,43 @@ test("native LAN chat import remaps chat and message character IDs", async () =>
     assert.equal(messages[0]?.characterId, importedCharacter.id);
   }));
 
+test("native LAN chat import drops unmapped source character IDs", async () =>
+  withDb(async (db) => {
+    const { buildNativeLanChatExport, importNativeLanChat } = await import(
+      "../src/services/lan-transfer/lan-transfer-native-chat.js"
+    );
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const mappedCharacter = await characters.create({ name: "Ari", description: "", first_mes: "Hi" });
+    const unmappedCharacter = await characters.create({ name: "Bea", description: "", first_mes: "Hi" });
+    assert.ok(mappedCharacter?.id);
+    assert.ok(unmappedCharacter?.id);
+    const chat = await chats.create({
+      name: "Group chat",
+      mode: "roleplay",
+      characterIds: [mappedCharacter.id, unmappedCharacter.id],
+    });
+    assert.ok(chat?.id);
+    await chats.createMessagesBatch(chat.id, [
+      { role: "assistant", characterId: mappedCharacter.id, content: "Mapped" },
+      { role: "assistant", characterId: unmappedCharacter.id, content: "Unmapped" },
+    ]);
+
+    const exported = await buildNativeLanChatExport(db, chat.id);
+    const importedCharacter = await characters.create({ name: "Ari imported", description: "", first_mes: "Hi" });
+    assert.ok(importedCharacter?.id);
+    const result = await importNativeLanChat(db, exported, { [mappedCharacter.id]: importedCharacter.id });
+
+    assert.equal(result.success, true);
+    assert.ok(result.id);
+    const importedChat = await chats.getById(result.id);
+    assert.ok(importedChat);
+    assert.deepEqual(JSON.parse(importedChat.characterIds as string), [importedCharacter.id]);
+    const messages = await chats.listMessages(result.id);
+    assert.equal(messages[0]?.characterId, importedCharacter.id);
+    assert.equal(messages[1]?.characterId, null);
+  }));
+
 test("native LAN chat import rejects invalid exports", async () =>
   withDb(async (db) => {
     const { importNativeLanChat } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");

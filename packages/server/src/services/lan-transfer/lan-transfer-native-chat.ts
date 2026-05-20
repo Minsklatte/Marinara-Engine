@@ -72,7 +72,9 @@ export async function importNativeLanChat(
   try {
     const nativeChat = validation.exported;
     const chats = createChatsStorage(db);
-    const characterIds = nativeChat.chat.characterIds.map((id) => characterIdMap[id] ?? id);
+    const characterIds = nativeChat.chat.characterIds
+      .map((id) => characterIdMap[id])
+      .filter((id): id is string => typeof id === "string" && id.length > 0);
     const chat = await chats.create({
       name: nativeChat.chat.name,
       mode: nativeChat.chat.mode,
@@ -88,7 +90,7 @@ export async function importNativeLanChat(
       chat.id,
       nativeChat.messages.map((message) => ({
         role: message.role,
-        characterId: message.characterId === null ? null : (characterIdMap[message.characterId] ?? message.characterId),
+        characterId: message.characterId === null ? null : (characterIdMap[message.characterId] ?? null),
         content: message.content,
         createdAt: message.createdAt,
       })),
