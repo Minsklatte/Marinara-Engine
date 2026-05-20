@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
+import { eq } from "drizzle-orm";
 import type { ExportEnvelope, LanTransferImportSummary, LanTransferPackage } from "@marinara-engine/shared";
+import { chats as chatsTable } from "../../db/schema/index.js";
 import { buildNativeCharacterEnvelope } from "../export/character-export.service.js";
 import { importMarinara } from "../import/marinara.importer.js";
 import { importSTChat } from "../import/st-chat.importer.js";
@@ -10,6 +12,7 @@ import {
   compareFingerprintSequences,
   fingerprintLanTransferMessage,
   fingerprintNativeCharacterEnvelope,
+  readLanTransferSyncId,
   withLanTransferCharacterSyncMetadata,
 } from "./lan-transfer-fingerprints.js";
 import {
@@ -252,10 +255,12 @@ async function importNativeChatSmart(
 
   if (comparison.kind === "incoming_extends_local") {
     const chats = createChatsStorage(app.db);
-    await chats.createMessagesBatch(
-      existing.id,
-      buildImportedMessages(validation.chat.messages, characterIdMap, comparison.appendFrom),
-    );
+    const appendedMessages = buildImportedMessages(validation.chat.messages, characterIdMap, comparison.appendFrom);
+    await chats.createMessagesBatch(existing.id, appendedMessages);
+    const lastAppendedAt = appendedMessages.at(-1)?.createdAt;
+    if (lastAppendedAt && existing.updatedAt > lastAppendedAt) {
+      await app.db.update(chatsTable).set({ updatedAt: existing.updatedAt }).where(eq(chatsTable.id, existing.id));
+    }
     summary.appended!.chats += 1;
     summary.appended!.messages += incomingFingerprints.length - comparison.appendFrom;
     writeChatIdMap(summary, item.id, existing.id, item.syncId);
@@ -268,11 +273,6 @@ async function importNativeChatSmart(
   if (result.success) {
     summary.imported.chats += 1;
     summary.copied!.chats += 1;
-    summary.skipped.push({
-      type: item.type,
-      name: item.name,
-      reason: "Synced chat history diverged; imported a copy.",
-    });
   } else {
     summary.skipped.push({ type: item.type, name: item.name, reason: result.error });
   }
@@ -336,6 +336,7 @@ async function findChatBySyncId(app: FastifyInstance, syncId: string) {
 
 async function getLocalMessageFingerprints(app: FastifyInstance, chatId: string): Promise<string[]> {
   const chats = createChatsStorage(app.db);
+  const characterSyncIds = await buildLocalCharacterSyncIdMap(app, chatId);
   const localMessages = await chats.listMessages(chatId);
   return localMessages.map((message) => {
     const extra = parseJsonObject(message.extra);
@@ -345,11 +346,36 @@ async function getLocalMessageFingerprints(app: FastifyInstance, chatId: string)
     }
     return fingerprintLanTransferMessage({
       role: message.role,
-      characterId: message.characterId,
+      characterId:
+        message.characterId === null ? null : (characterSyncIds.get(message.characterId) ?? message.characterId),
       content: message.content,
       createdAt: message.createdAt,
     });
   });
+}
+
+async function buildLocalCharacterSyncIdMap(app: FastifyInstance, chatId: string): Promise<Map<string, string>> {
+  const chats = createChatsStorage(app.db);
+  const characters = createCharactersStorage(app.db);
+  const ids = new Set<string>();
+  const chat = await chats.getById(chatId);
+  if (chat) {
+    for (const id of parseJsonStringArray(chat.characterIds)) ids.add(id);
+  }
+  for (const message of await chats.listMessages(chatId)) {
+    if (message.characterId) ids.add(message.characterId);
+  }
+
+  const map = new Map<string, string>();
+  for (const id of ids) {
+    const character = await characters.getById(id);
+    if (!character) {
+      map.set(id, id);
+      continue;
+    }
+    map.set(id, readLanTransferSyncId({ data: { data: parseJsonObject(character.data) } }) ?? id);
+  }
+  return map;
 }
 
 function writeChatIdMap(
@@ -374,5 +400,20 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
     return isRecord(parsed) ? parsed : {};
   } catch {
     return {};
+  }
+}
+
+function parseJsonStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+  }
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : [];
+  } catch {
+    return [];
   }
 }

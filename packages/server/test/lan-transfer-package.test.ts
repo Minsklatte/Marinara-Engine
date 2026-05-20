@@ -311,6 +311,40 @@ test("imports explicit JSONL chat packages through package import", async () =>
     assert.equal(messages[0]?.content, "hello");
   }));
 
+test("copy mode imports explicit JSONL chat packages as copies", async () =>
+  withDb(async (db) => {
+    const content = [
+      JSON.stringify({ user_name: "User", character_name: "Notebook" }),
+      JSON.stringify({ name: "User", is_user: true, mes: "hello" }),
+    ].join("\n");
+    const bytes = Buffer.byteLength(content, "utf8");
+    const pkg = {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: "2999-01-01T00:00:00.000Z",
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [{ type: "chat", id: "chat-jsonl", name: "JSONL import", format: "jsonl", messageCount: 1, bytes }],
+        totalBytes: bytes,
+      },
+      items: [{ type: "chat", id: "chat-jsonl", name: "JSONL import", format: "jsonl", content }],
+    };
+    const validation = validateLanTransferPackage(pkg);
+    assert.equal(validation.ok, true);
+
+    const summary = await importLanTransferPackage(
+      { db } as any,
+      validation.ok ? validation.package : (pkg as any),
+      { importMode: "copy" },
+    );
+
+    assert.equal(summary.imported.chats, 1);
+    assert.equal(summary.copied?.chats, 1);
+    assert.deepEqual(summary.skipped, []);
+  }));
+
 test("accepts a native chat package item with matching manifest bytes", () => {
   const fixture = buildNativeChatFixture();
   const result = validateLanTransferPackage(
