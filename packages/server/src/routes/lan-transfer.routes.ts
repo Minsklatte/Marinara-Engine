@@ -37,6 +37,8 @@ import {
 
 const OFFER_TTL_MS = 10 * 60_000;
 const REMOTE_REQUEST_TIMEOUT_MS = 8_000;
+const ORIGIN_VALIDATION_TIMEOUT_MS = 1_000;
+const MAX_SENDER_ORIGIN_CANDIDATES = 5;
 const REMOTE_MANIFEST_RESPONSE_MAX_BYTES = 1024 * 1024;
 const REMOTE_ENCRYPTED_RESPONSE_MAX_BYTES = LAN_TRANSFER_PACKAGE_MAX_BYTES * 4;
 const DISABLED_RESPONSE = { error: "LAN transfer is disabled" };
@@ -224,12 +226,19 @@ async function fetchFromAnySenderOrigin<T>(
   payload: LanTransferPayload,
   endpoint: "manifest" | "download",
 ): Promise<{ origin: string; value: T }> {
-  const origins = Array.from(new Set([...(payload.origins ?? []), payload.from])).slice(0, 5);
+  const origins = getSenderOriginCandidates(payload);
+  const requestDeadlineMs = Date.now() + getRemoteRequestTimeoutMs();
   const errors: string[] = [];
   let attemptedFetch = false;
 
   for (const origin of origins) {
-    const originResult = await validateLanTransferOrigin(origin);
+    const validationTimeoutMs = getRemainingTimeoutMs(requestDeadlineMs, getOriginValidationTimeoutMs());
+    if (validationTimeoutMs <= 0) {
+      errors.push(`${origin}: LAN transfer sender request timed out`);
+      break;
+    }
+
+    const originResult = await validateLanTransferOriginWithTimeout(origin, validationTimeoutMs);
     if (!originResult.ok) {
       errors.push(`${origin}: ${originResult.error}`);
       continue;
@@ -238,9 +247,16 @@ async function fetchFromAnySenderOrigin<T>(
     attemptedFetch = true;
 
     try {
-      const value = await fetchSenderJson<T>({ ...payload, from: origin }, originResult, endpoint);
+      const fetchTimeoutMs = getRemainingTimeoutMs(requestDeadlineMs);
+      if (fetchTimeoutMs <= 0) throw new Error("LAN transfer sender request timed out");
+
+      const value = await fetchSenderJson<T>({ ...payload, from: origin }, originResult, endpoint, fetchTimeoutMs);
       return { origin, value };
     } catch (err) {
+      if (err instanceof NonRetryableLanTransferSenderError) {
+        throw new LanTransferOriginFetchError(getErrorMessage(err), 502);
+      }
+
       errors.push(`${origin}: ${getErrorMessage(err)}`);
     }
   }
@@ -251,10 +267,41 @@ async function fetchFromAnySenderOrigin<T>(
   );
 }
 
+function getSenderOriginCandidates(payload: LanTransferPayload): string[] {
+  const origins = Array.from(new Set(payload.origins ?? []));
+  if (!origins.includes(payload.from)) {
+    if (origins.length >= MAX_SENDER_ORIGIN_CANDIDATES) origins[MAX_SENDER_ORIGIN_CANDIDATES - 1] = payload.from;
+    else origins.push(payload.from);
+  }
+
+  return origins.slice(0, MAX_SENDER_ORIGIN_CANDIDATES);
+}
+
+function getRemainingTimeoutMs(deadlineMs: number, capMs = Number.POSITIVE_INFINITY): number {
+  return Math.min(Math.max(0, deadlineMs - Date.now()), capMs);
+}
+
+async function validateLanTransferOriginWithTimeout(
+  origin: string,
+  timeoutMs: number,
+): Promise<LanTransferOriginValidationResult> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      resolve({ ok: false, error: "LAN transfer origin validation timed out" });
+    }, timeoutMs);
+
+    validateLanTransferOrigin(origin)
+      .then(resolve)
+      .catch(() => resolve({ ok: false, error: "Unable to resolve LAN transfer origin host" }))
+      .finally(() => clearTimeout(timeout));
+  });
+}
+
 async function fetchSenderJson<T>(
   payload: LanTransferPayload,
   origin: ValidatedLanTransferOrigin,
   endpoint: "manifest" | "download",
+  timeoutMs: number,
 ): Promise<T> {
   const url = new URL(`/api/lan-transfer/offers/${encodeURIComponent(payload.offerId)}/${endpoint}`, origin.url);
   const dispatcher = createPinnedSenderAgent(origin.addresses);
@@ -267,14 +314,25 @@ async function fetchSenderJson<T>(
     body: JSON.stringify({ downloadToken: payload.downloadToken } satisfies LanTransferManifestRequest),
     dispatcher,
     maxRedirections: 0,
-    signal: AbortSignal.timeout(REMOTE_REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   };
 
   try {
     const response = await undiciRequest(url, requestOptions);
+    const isConsumingDownloadResponse =
+      endpoint === "download" && response.statusCode >= 200 && response.statusCode < 300;
     const maxBytes =
       endpoint === "download" ? REMOTE_ENCRYPTED_RESPONSE_MAX_BYTES : REMOTE_MANIFEST_RESPONSE_MAX_BYTES;
-    const text = await readRemoteBody(response.body, maxBytes);
+    let text: string;
+    try {
+      text = await readRemoteBody(response.body, maxBytes);
+    } catch (err) {
+      if (isConsumingDownloadResponse) {
+        throw new NonRetryableLanTransferSenderError(getErrorMessage(err));
+      }
+
+      throw err;
+    }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw new Error(`LAN transfer sender returned HTTP ${response.statusCode}`);
@@ -283,6 +341,10 @@ async function fetchSenderJson<T>(
     try {
       return JSON.parse(text) as T;
     } catch (err) {
+      if (isConsumingDownloadResponse) {
+        throw new NonRetryableLanTransferSenderError("LAN transfer sender returned invalid JSON");
+      }
+
       throw new Error("LAN transfer sender returned invalid JSON", { cause: err });
     }
   } finally {
@@ -341,9 +403,27 @@ function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "LAN transfer request failed";
 }
 
+function getRemoteRequestTimeoutMs(): number {
+  return getPositiveIntegerEnv("LAN_TRANSFER_REMOTE_REQUEST_TIMEOUT_MS", REMOTE_REQUEST_TIMEOUT_MS);
+}
+
+function getOriginValidationTimeoutMs(): number {
+  return getPositiveIntegerEnv("LAN_TRANSFER_ORIGIN_VALIDATION_TIMEOUT_MS", ORIGIN_VALIDATION_TIMEOUT_MS);
+}
+
+function getPositiveIntegerEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function getLanTransferFetchStatusCode(err: unknown): 400 | 502 {
   return err instanceof LanTransferOriginFetchError ? err.statusCode : 502;
 }
+
+class NonRetryableLanTransferSenderError extends Error {}
 
 class LanTransferOriginFetchError extends Error {
   constructor(

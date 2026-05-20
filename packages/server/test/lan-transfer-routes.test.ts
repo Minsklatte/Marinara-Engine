@@ -410,6 +410,110 @@ test("preview skips invalid sender origins before trying a later valid origin", 
     assert.equal(JSON.parse(response.body).from, workingOrigin);
   }));
 
+test("preview preserves from as a fallback candidate when origins are capped", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const offerId = "route-preview-origin-cap-keeps-from";
+    const downloadToken = "download-token";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: testManifest,
+      encryptedPackage: testEncryptedPackage,
+    });
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    const workingOrigin = `http://127.0.0.1:${address.port}`;
+
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: workingOrigin,
+      origins: [
+        "http://8.8.8.8:7860",
+        "http://1.1.1.1:7860",
+        "http://9.9.9.9:7860",
+        "http://208.67.222.222:7860",
+        "http://203.0.113.10:7860",
+      ],
+      offerId,
+      downloadToken,
+      secret: "secret",
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/preview",
+      payload: { transferPayload },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(JSON.parse(response.body).from, workingOrigin);
+  }));
+
+test("preview bounds sender origin validation time before trying a later origin", async () =>
+  withLanTransferApp(
+    { LAN_TRANSFER_ENABLED: "1", LAN_TRANSFER_ORIGIN_VALIDATION_TIMEOUT_MS: "25" },
+    async (app) => {
+      const offerId = "route-preview-validation-timeout";
+      const downloadToken = "download-token";
+      lanTransferOfferStore.delete(offerId);
+      lanTransferOfferStore.put({
+        offerId,
+        downloadTokenHash: hashLanTransferToken(downloadToken),
+        expiresAtMs: Date.now() + 60_000,
+        manifest: testManifest,
+        encryptedPackage: testEncryptedPackage,
+      });
+
+      await app.listen({ host: "127.0.0.1", port: 0 });
+      const address = app.server.address();
+      assert.equal(typeof address, "object");
+      assert.notEqual(address, null);
+      const workingOrigin = `http://sender.test:${address.port}`;
+      const originalLookup = dns.lookup;
+      dns.lookup = (async (hostname: string) => {
+        if (hostname === "slow.test") {
+          return new Promise((resolve) => {
+            setTimeout(() => resolve([{ address: "127.0.0.1", family: 4 }]), 1_000);
+          });
+        }
+        return [{ address: "127.0.0.1", family: 4 }];
+      }) as typeof dns.lookup;
+
+      try {
+        const transferPayload = serializeLanTransferPayload({
+          type: LAN_TRANSFER_TYPE,
+          version: LAN_TRANSFER_VERSION,
+          from: "http://slow.test:7860",
+          origins: ["http://slow.test:7860", workingOrigin],
+          offerId,
+          downloadToken,
+          secret: "secret",
+        });
+
+        const response = await Promise.race([
+          app.inject({
+            method: "POST",
+            url: "/api/lan-transfer/preview",
+            payload: { transferPayload },
+          }),
+          new Promise<"timed-out">((resolve) => setTimeout(() => resolve("timed-out"), 250)),
+        ]);
+
+        assert.notEqual(response, "timed-out", "validation did not respect the request timeout");
+        assert.equal(response.statusCode, 200, response.body);
+        assert.equal(JSON.parse(response.body).from, workingOrigin);
+      } finally {
+        dns.lookup = originalLookup;
+      }
+    },
+  ));
+
 test("preview accepts phase-2 payloads with multiple LAN origins", async () =>
   withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
     const offerId = "route-preview-multi-origin";
@@ -557,4 +661,125 @@ test("import-from-offer downloads, decrypts, validates, and imports a remote pac
       skipped: [],
     });
     assert.equal(lanTransferOfferStore.get(offerId), null);
+  }));
+
+test("import-from-offer tries sender origins before download consumption", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const offerId = "route-import-origin-fallback";
+    const downloadToken = "download-token";
+    const secret = "transfer-secret";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: testManifest,
+      encryptedPackage: encryptLanTransferPackage(JSON.stringify(testPackage), secret),
+    });
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    const workingOrigin = `http://127.0.0.1:${address.port}`;
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: "http://127.0.0.1:1",
+      origins: ["http://127.0.0.1:1", workingOrigin],
+      offerId,
+      downloadToken,
+      secret,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/import-from-offer",
+      payload: { transferPayload },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.deepEqual(JSON.parse(response.body), {
+      imported: {
+        chats: 0,
+        characters: 0,
+      },
+      skipped: [],
+    });
+    assert.equal(lanTransferOfferStore.get(offerId), null);
+  }));
+
+test("import-from-offer does not retry after a consuming download response fails", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const offerId = "route-import-post-consumption-failure";
+    const downloadToken = "download-token";
+    const secret = "transfer-secret";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: testManifest,
+      encryptedPackage: encryptLanTransferPackage(JSON.stringify(testPackage), secret),
+    });
+
+    const badSender = Fastify({ logger: false });
+    badSender.post(`/api/lan-transfer/offers/${offerId}/download`, async (_request, reply) =>
+      reply.type("application/json").send("{not-json"),
+    );
+    await badSender.listen({ host: "127.0.0.1", port: 0 });
+
+    try {
+      await app.listen({ host: "127.0.0.1", port: 0 });
+      const goodAddress = app.server.address();
+      const badAddress = badSender.server.address();
+      assert.equal(typeof goodAddress, "object");
+      assert.notEqual(goodAddress, null);
+      assert.equal(typeof badAddress, "object");
+      assert.notEqual(badAddress, null);
+      const badOrigin = `http://127.0.0.1:${badAddress.port}`;
+      const workingOrigin = `http://127.0.0.1:${goodAddress.port}`;
+      const transferPayload = serializeLanTransferPayload({
+        type: LAN_TRANSFER_TYPE,
+        version: LAN_TRANSFER_VERSION,
+        from: badOrigin,
+        origins: [badOrigin, workingOrigin],
+        offerId,
+        downloadToken,
+        secret,
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/lan-transfer/import-from-offer",
+        payload: { transferPayload },
+      });
+
+      assert.equal(response.statusCode, 502, response.body);
+      assert.match(JSON.parse(response.body).error, /invalid JSON/);
+      assert.notEqual(lanTransferOfferStore.get(offerId), null);
+    } finally {
+      await badSender.close();
+    }
+  }));
+
+test("import-from-offer rejects public-only sender origins before fetch", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: "http://8.8.8.8:7860",
+      offerId: "public-offer",
+      downloadToken: "download-token",
+      secret: "secret",
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/import-from-offer",
+      payload: { transferPayload },
+    });
+
+    assert.equal(response.statusCode, 400, response.body);
+    assert.match(JSON.parse(response.body).error, /outside allowed LAN ranges/);
   }));
