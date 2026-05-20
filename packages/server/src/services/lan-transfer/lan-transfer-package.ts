@@ -8,11 +8,9 @@ import {
 } from "@marinara-engine/shared";
 import { serializeChatTranscript } from "../export/chat-export.service.js";
 import { buildNativeCharacterEnvelope } from "../export/character-export.service.js";
-import { importSTChat } from "../import/st-chat.importer.js";
 import {
   buildNativeLanChatExport,
   collectNativeLanChatCharacterIds,
-  importNativeLanChat,
   validateNativeLanChatExport,
 } from "./lan-transfer-native-chat.js";
 import {
@@ -23,6 +21,7 @@ import {
 } from "./lan-transfer-fingerprints.js";
 import {
   createEmptyLanTransferImportSummary,
+  importLanTransferChats,
   importLanTransferCharacters,
   omitEmptyLanTransferImportSummaryCounts,
   type LanTransferPackageImportOptions,
@@ -256,53 +255,7 @@ export async function importLanTransferPackage(
 ): Promise<LanTransferImportSummary> {
   const summary = createEmptyLanTransferImportSummary();
   const characterIdMap = await importLanTransferCharacters(app, pkg, summary, options);
-
-  for (const item of pkg.items) {
-    try {
-      if (item.type === "chat" && item.format === "native") {
-        const validation = validateNativeLanChatExport(item.chat);
-        if (!validation.ok) {
-          summary.skipped.push({ type: item.type, name: item.name, reason: validation.error });
-          continue;
-        }
-
-        const missingCharacterIds = collectNativeLanChatCharacterIds(validation.chat).filter(
-          (id) => !characterIdMap[id],
-        );
-        if (missingCharacterIds.length > 0) {
-          summary.skipped.push({
-            type: item.type,
-            name: item.name,
-            reason: `Missing imported character mappings: ${missingCharacterIds.join(", ")}`,
-          });
-          continue;
-        }
-
-        const result = await importNativeLanChat(app.db, validation.chat, characterIdMap);
-        if (result.success) {
-          summary.imported.chats += 1;
-        } else {
-          summary.skipped.push({ type: item.type, name: item.name, reason: result.error });
-        }
-        continue;
-      }
-
-      if (item.type === "chat" && item.format === "jsonl") {
-        const result = await importSTChat(item.content, app.db, { chatName: item.name });
-        if ("success" in result && result.success) {
-          summary.imported.chats += 1;
-        } else {
-          summary.skipped.push({ type: item.type, name: item.name, reason: readImportError(result) });
-        }
-      }
-    } catch (err) {
-      summary.skipped.push({
-        type: item.type,
-        name: item.name,
-        reason: err instanceof Error ? err.message : "Import failed",
-      });
-    }
-  }
+  await importLanTransferChats(app, pkg, characterIdMap, summary, options);
 
   return omitEmptyLanTransferImportSummaryCounts(summary);
 }
@@ -586,10 +539,6 @@ function isNativeCharacterEnvelope(value: unknown): value is Record<string, unkn
     typeof data.spec_version === "string" &&
     isRecord(data.data)
   );
-}
-
-function readImportError(value: unknown): string {
-  return isRecord(value) && typeof value.error === "string" ? value.error : "Import failed";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -163,6 +163,50 @@ test("native LAN chat import keeps source order when timestamps collide", async 
     );
   }));
 
+test("native LAN chat import preserves LAN fingerprints and optional sync ID metadata", async () =>
+  withDb(async (db) => {
+    const { buildNativeLanChatExport, importNativeLanChat } = await import(
+      "../src/services/lan-transfer/lan-transfer-native-chat.js"
+    );
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const character = await characters.create({ name: "Ari", description: "", first_mes: "Hi" });
+    const importedCharacter = await characters.create({ name: "Ari imported", description: "", first_mes: "Hi" });
+    assert.ok(character?.id);
+    assert.ok(importedCharacter?.id);
+    const chat = await chats.create({ name: "Ari chat", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(chat?.id);
+    await chats.patchMetadata(chat.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(chat.id, [
+      {
+        role: "assistant",
+        characterId: character.id,
+        content: "Hello",
+        createdAt: "2026-05-20T12:00:00.000Z",
+      },
+    ]);
+    const exported = await buildNativeLanChatExport(db, chat.id);
+
+    const result = await importNativeLanChat(
+      db,
+      exported,
+      { [character.id]: importedCharacter.id },
+      { preserveSyncId: true, nameSuffix: " copy" },
+    );
+
+    assert.equal(result.success, true);
+    assert.ok(result.id);
+    const importedChat = await chats.getById(result.id);
+    assert.ok(importedChat);
+    assert.equal(importedChat.name, "Ari chat copy");
+    assert.equal(JSON.parse(importedChat.metadata as string).lanTransfer.syncId, "source-chat");
+    assert.equal(importedChat.updatedAt, "2026-05-20T12:00:00.000Z");
+    const messages = await chats.listMessages(importedChat.id);
+    assert.equal(JSON.parse(messages[0]!.extra as string).lanTransfer.fingerprint, exported.messages[0]!.fingerprint);
+    const swipes = await chats.getSwipes(messages[0]!.id);
+    assert.equal(JSON.parse(swipes[0]!.extra as string).lanTransfer.fingerprint, exported.messages[0]!.fingerprint);
+  }));
+
 test("native LAN chat export emits object metadata", async () =>
   withDb(async (db) => {
     const { buildNativeLanChatExport } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");

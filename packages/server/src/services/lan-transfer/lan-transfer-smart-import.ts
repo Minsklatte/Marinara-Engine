@@ -2,12 +2,22 @@ import type { FastifyInstance } from "fastify";
 import type { ExportEnvelope, LanTransferImportSummary, LanTransferPackage } from "@marinara-engine/shared";
 import { buildNativeCharacterEnvelope } from "../export/character-export.service.js";
 import { importMarinara } from "../import/marinara.importer.js";
+import { importSTChat } from "../import/st-chat.importer.js";
 import { createCharacterGalleryStorage } from "../storage/character-gallery.storage.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
+import { createChatsStorage } from "../storage/chats.storage.js";
 import {
+  compareFingerprintSequences,
+  fingerprintLanTransferMessage,
   fingerprintNativeCharacterEnvelope,
   withLanTransferCharacterSyncMetadata,
 } from "./lan-transfer-fingerprints.js";
+import {
+  buildImportedMessages,
+  collectNativeLanChatCharacterIds,
+  importNativeLanChat,
+  validateNativeLanChatExport,
+} from "./lan-transfer-native-chat.js";
 
 export interface LanTransferPackageImportOptions {
   importMode?: "smart" | "copy";
@@ -97,6 +107,35 @@ export async function importLanTransferCharacters(
   return characterIdMap;
 }
 
+export async function importLanTransferChats(
+  app: FastifyInstance,
+  pkg: LanTransferPackage,
+  characterIdMap: Record<string, string>,
+  summary: LanTransferImportSummary,
+  options: LanTransferPackageImportOptions,
+) {
+  const smart = (options.importMode ?? "smart") === "smart";
+
+  for (const item of pkg.items) {
+    if (item.type !== "chat") continue;
+
+    try {
+      if (item.format === "native" && smart) {
+        await importNativeChatSmart(app, item, characterIdMap, summary);
+        continue;
+      }
+
+      await importChatAsCopy(app, item, characterIdMap, summary, options);
+    } catch (err) {
+      summary.skipped.push({
+        type: item.type,
+        name: item.name,
+        reason: err instanceof Error ? err.message : "Import failed",
+      });
+    }
+  }
+}
+
 export function omitEmptyLanTransferImportSummaryCounts(
   summary: LanTransferImportSummary,
 ): LanTransferImportSummary {
@@ -166,4 +205,174 @@ function writeCharacterIdMap(
 ) {
   characterIdMap[item.id] = localId;
   if (item.syncId) characterIdMap[item.syncId] = localId;
+}
+
+async function importNativeChatSmart(
+  app: FastifyInstance,
+  item: Extract<LanTransferPackage["items"][number], { type: "chat"; format: "native" }>,
+  characterIdMap: Record<string, string>,
+  summary: LanTransferImportSummary,
+) {
+  const validation = validateNativeLanChatExport(item.chat);
+  if (!validation.ok) {
+    summary.skipped.push({ type: item.type, name: item.name, reason: validation.error });
+    return;
+  }
+
+  const missingCharacterIds = collectNativeLanChatCharacterIds(validation.chat).filter((id) => !characterIdMap[id]);
+  if (missingCharacterIds.length > 0) {
+    summary.skipped.push({
+      type: item.type,
+      name: item.name,
+      reason: `Missing imported character mappings: ${missingCharacterIds.join(", ")}`,
+    });
+    return;
+  }
+
+  const existing = await findChatBySyncId(app, validation.chat.chat.syncId);
+  if (!existing) {
+    const result = await importNativeLanChat(app.db, validation.chat, characterIdMap, { preserveSyncId: true });
+    if (result.success) {
+      summary.imported.chats += 1;
+      writeChatIdMap(summary, item.id, result.id, item.syncId);
+    } else {
+      summary.skipped.push({ type: item.type, name: item.name, reason: result.error });
+    }
+    return;
+  }
+
+  const localFingerprints = await getLocalMessageFingerprints(app, existing.id);
+  const incomingFingerprints = validation.chat.messages.map((message) => message.fingerprint);
+  const comparison = compareFingerprintSequences(localFingerprints, incomingFingerprints);
+  if (comparison.kind === "same" || comparison.kind === "local_ahead") {
+    summary.reused!.chats += 1;
+    writeChatIdMap(summary, item.id, existing.id, item.syncId);
+    return;
+  }
+
+  if (comparison.kind === "incoming_extends_local") {
+    const chats = createChatsStorage(app.db);
+    await chats.createMessagesBatch(
+      existing.id,
+      buildImportedMessages(validation.chat.messages, characterIdMap, comparison.appendFrom),
+    );
+    summary.appended!.chats += 1;
+    summary.appended!.messages += incomingFingerprints.length - comparison.appendFrom;
+    writeChatIdMap(summary, item.id, existing.id, item.syncId);
+    return;
+  }
+
+  const result = await importNativeLanChat(app.db, validation.chat, characterIdMap, {
+    nameSuffix: " (LAN conflict copy)",
+  });
+  if (result.success) {
+    summary.imported.chats += 1;
+    summary.copied!.chats += 1;
+    summary.skipped.push({
+      type: item.type,
+      name: item.name,
+      reason: "Synced chat history diverged; imported a copy.",
+    });
+  } else {
+    summary.skipped.push({ type: item.type, name: item.name, reason: result.error });
+  }
+}
+
+async function importChatAsCopy(
+  app: FastifyInstance,
+  item: Extract<LanTransferPackage["items"][number], { type: "chat" }>,
+  characterIdMap: Record<string, string>,
+  summary: LanTransferImportSummary,
+  options: LanTransferPackageImportOptions,
+) {
+  if (item.format === "native") {
+    const validation = validateNativeLanChatExport(item.chat);
+    if (!validation.ok) {
+      summary.skipped.push({ type: item.type, name: item.name, reason: validation.error });
+      return;
+    }
+
+    const missingCharacterIds = collectNativeLanChatCharacterIds(validation.chat).filter((id) => !characterIdMap[id]);
+    if (missingCharacterIds.length > 0) {
+      summary.skipped.push({
+        type: item.type,
+        name: item.name,
+        reason: `Missing imported character mappings: ${missingCharacterIds.join(", ")}`,
+      });
+      return;
+    }
+
+    const result = await importNativeLanChat(app.db, validation.chat, characterIdMap);
+    if (result.success) {
+      summary.imported.chats += 1;
+      if ((options.importMode ?? "smart") === "copy") summary.copied!.chats += 1;
+    } else {
+      summary.skipped.push({ type: item.type, name: item.name, reason: result.error });
+    }
+    return;
+  }
+
+  if (item.format === "jsonl") {
+    const result = await importSTChat(item.content, app.db, { chatName: item.name });
+    if ("success" in result && result.success) {
+      summary.imported.chats += 1;
+      if ((options.importMode ?? "smart") === "copy") summary.copied!.chats += 1;
+    } else {
+      summary.skipped.push({ type: item.type, name: item.name, reason: readImportError(result) });
+    }
+  }
+}
+
+async function findChatBySyncId(app: FastifyInstance, syncId: string) {
+  const chats = createChatsStorage(app.db);
+  for (const chat of await chats.list()) {
+    if (chat.id === syncId) return chat;
+    const metadata = parseJsonObject(chat.metadata);
+    const lanTransfer = isRecord(metadata.lanTransfer) ? metadata.lanTransfer : null;
+    if (lanTransfer?.syncId === syncId) return chat;
+  }
+  return null;
+}
+
+async function getLocalMessageFingerprints(app: FastifyInstance, chatId: string): Promise<string[]> {
+  const chats = createChatsStorage(app.db);
+  const localMessages = await chats.listMessages(chatId);
+  return localMessages.map((message) => {
+    const extra = parseJsonObject(message.extra);
+    const lanTransfer = isRecord(extra.lanTransfer) ? extra.lanTransfer : null;
+    if (typeof lanTransfer?.fingerprint === "string" && lanTransfer.fingerprint.trim().length > 0) {
+      return lanTransfer.fingerprint;
+    }
+    return fingerprintLanTransferMessage({
+      role: message.role,
+      characterId: message.characterId,
+      content: message.content,
+      createdAt: message.createdAt,
+    });
+  });
+}
+
+function writeChatIdMap(
+  summary: LanTransferImportSummary,
+  sourceId: string,
+  localId: string,
+  syncId?: string,
+) {
+  summary.chatIdMap = { ...(summary.chatIdMap ?? {}), [sourceId]: localId };
+  if (syncId) summary.chatIdMap[syncId] = localId;
+}
+
+function readImportError(value: unknown): string {
+  return isRecord(value) && typeof value.error === "string" ? value.error : "Import failed";
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }

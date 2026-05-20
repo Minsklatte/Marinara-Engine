@@ -154,10 +154,11 @@ test("builds, validates, and imports characterless native chat packages", async 
     const validation = validateLanTransferPackage(pkg);
     assert.equal(validation.ok, true);
 
-    const summary = await importLanTransferPackage({ db } as any, pkg);
+    const summary = await importLanTransferPackage({ db } as any, pkg, { importMode: "copy" });
 
     assert.equal(summary.imported.characters, 0);
     assert.equal(summary.imported.chats, 1);
+    assert.equal(summary.copied?.chats, 1);
     assert.deepEqual(summary.skipped, []);
     assert.equal(pkg.items.length, 1);
     assert.equal(pkg.items[0]?.type, "chat");

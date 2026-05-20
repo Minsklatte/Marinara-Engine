@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createFileNativeDB } from "../src/db/file-backed-store.js";
 import { buildLanTransferPackage, importLanTransferPackage } from "../src/services/lan-transfer/lan-transfer-package.js";
 import { createCharactersStorage } from "../src/services/storage/characters.storage.js";
+import { createChatsStorage } from "../src/services/storage/chats.storage.js";
 
 async function withDb<T>(fn: (db: Awaited<ReturnType<typeof createFileNativeDB>>) => Promise<T>) {
   const root = mkdtempSync(join(tmpdir(), "marinara-lan-transfer-smart-import-"));
@@ -126,4 +127,110 @@ test("zero summary omits empty smart import counters", async () =>
       imported: { chats: 0, characters: 0 },
       skipped: [],
     });
+  }));
+
+test("smart import appends missing messages to an existing synced chat and keeps local settings", async () =>
+  withDb(async (db) => {
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const character = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(character?.id);
+    const existing = await chats.create({
+      name: "Alicia thread",
+      mode: "roleplay",
+      characterIds: [character.id],
+      promptPresetId: "local-preset",
+      connectionId: "local-connection",
+    });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "assistant", characterId: character.id, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+
+    const source = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(source?.id);
+    await chats.patchMetadata(source.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(source.id, [
+      { role: "assistant", characterId: character.id, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+      { role: "user", characterId: null, content: "Two", createdAt: "2026-05-20T12:01:00.000Z" },
+    ]);
+
+    const pkg = await buildLanTransferPackage(
+      { db } as any,
+      [{ type: "chat", id: source.id, format: "native" }],
+      "2999-01-01T00:00:00.000Z",
+    );
+    await chats.remove(source.id);
+
+    const summary = await importLanTransferPackage({ db } as any, pkg, { importMode: "smart" });
+
+    assert.equal(summary.appended?.chats, 1);
+    assert.equal(summary.appended?.messages, 1);
+    assert.equal(summary.imported.chats, 0);
+    const updated = await chats.getById(existing.id);
+    assert.equal(updated?.promptPresetId, "local-preset");
+    assert.equal(updated?.connectionId, "local-connection");
+    const messages = await chats.listMessages(existing.id);
+    assert.deepEqual(messages.map((message) => message.content), ["One", "Two"]);
+  }));
+
+test("smart import skips identical synced chats", async () =>
+  withDb(async (db) => {
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const character = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(character?.id);
+    const existing = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "assistant", characterId: character.id, content: "One", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+
+    const pkg = await buildLanTransferPackage(
+      { db } as any,
+      [{ type: "chat", id: existing.id, format: "native" }],
+      "2999-01-01T00:00:00.000Z",
+    );
+
+    const summary = await importLanTransferPackage({ db } as any, pkg, { importMode: "smart" });
+
+    assert.equal(summary.reused?.chats, 1);
+    assert.equal(summary.imported.chats, 0);
+    assert.equal((await chats.list()).length, 1);
+  }));
+
+test("smart import copies divergent synced chats instead of silently merging", async () =>
+  withDb(async (db) => {
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const character = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(character?.id);
+    const existing = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(existing?.id);
+    await chats.patchMetadata(existing.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(existing.id, [
+      { role: "assistant", characterId: character.id, content: "Local branch", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+
+    const source = await chats.create({ name: "Alicia thread", mode: "roleplay", characterIds: [character.id] });
+    assert.ok(source?.id);
+    await chats.patchMetadata(source.id, { lanTransfer: { syncId: "source-chat" } }, { touchUpdatedAt: false });
+    await chats.createMessagesBatch(source.id, [
+      { role: "assistant", characterId: character.id, content: "Remote branch", createdAt: "2026-05-20T12:00:00.000Z" },
+    ]);
+    const pkg = await buildLanTransferPackage(
+      { db } as any,
+      [{ type: "chat", id: source.id, format: "native" }],
+      "2999-01-01T00:00:00.000Z",
+    );
+    await chats.remove(source.id);
+
+    const summary = await importLanTransferPackage({ db } as any, pkg, { importMode: "smart" });
+
+    assert.equal(summary.copied?.chats, 1);
+    assert.equal(summary.imported.chats, 1);
+    assert.match(summary.skipped[0]?.reason ?? "", /diverged/i);
+    assert.equal((await chats.list()).length, 2);
   }));

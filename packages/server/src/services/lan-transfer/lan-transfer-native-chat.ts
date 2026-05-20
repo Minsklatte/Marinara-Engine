@@ -32,6 +32,11 @@ export interface NativeLanChatExport {
 
 type NativeLanChatImportResult = { success: true; id: string } | { success: false; error: string };
 
+export interface NativeLanChatImportOptions {
+  preserveSyncId?: boolean;
+  nameSuffix?: string;
+}
+
 const CHAT_MODES: readonly ChatMode[] = ["conversation", "roleplay", "visual_novel", "game"];
 const MESSAGE_ROLES: readonly MessageRole[] = ["system", "user", "assistant", "narrator"];
 
@@ -86,6 +91,7 @@ export async function importNativeLanChat(
   db: DB,
   exported: unknown,
   characterIdMap: Record<string, string>,
+  options: NativeLanChatImportOptions = {},
 ): Promise<NativeLanChatImportResult> {
   const validation = validateNativeLanChatExport(exported);
   if (!validation.ok) return { success: false, error: validation.error };
@@ -97,7 +103,7 @@ export async function importNativeLanChat(
       .map((id) => characterIdMap[id])
       .filter((id): id is string => typeof id === "string" && id.length > 0);
     const chat = await chats.create({
-      name: nativeChat.chat.name,
+      name: `${nativeChat.chat.name}${options.nameSuffix ?? ""}`,
       mode: nativeChat.chat.mode,
       characterIds,
       groupId: null,
@@ -107,15 +113,15 @@ export async function importNativeLanChat(
     });
     if (!chat) return { success: false, error: "Failed to create chat" };
 
-    await chats.createMessagesBatch(
-      chat.id,
-      buildImportedMessages(nativeChat.messages, characterIdMap).map((message) => ({
-        role: message.role,
-        characterId: message.characterId,
-        content: message.content,
-        createdAt: message.createdAt,
-      })),
-    );
+    await chats.createMessagesBatch(chat.id, buildImportedMessages(nativeChat.messages, characterIdMap));
+
+    if (options.preserveSyncId) {
+      await chats.patchMetadata(
+        chat.id,
+        { lanTransfer: { syncId: nativeChat.chat.syncId } },
+        { touchUpdatedAt: false },
+      );
+    }
 
     return { success: true, id: chat.id };
   } catch (error) {
@@ -292,14 +298,30 @@ function isOptionalCanonicalTimestamp(value: unknown): boolean {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value;
 }
 
-function buildImportedMessages(
+export function buildImportedMessages(
   messages: NativeLanChatExport["messages"],
   characterIdMap: Record<string, string>,
-): Array<Omit<NativeLanChatExport["messages"][number], "fingerprint">> {
+  startIndex = 0,
+): Array<{
+  role: MessageRole;
+  characterId: string | null;
+  content: string;
+  createdAt: string;
+  extra: Record<string, unknown>;
+  swipeExtra: Record<string, unknown>;
+}> {
   let previousTimestampMs: number | null = null;
   const fallbackBaseMs = Date.now();
+  const importedMessages: Array<{
+    role: MessageRole;
+    characterId: string | null;
+    content: string;
+    createdAt: string;
+    extra: Record<string, unknown>;
+    swipeExtra: Record<string, unknown>;
+  }> = [];
 
-  return messages.map((message, index) => {
+  messages.forEach((message, index) => {
     const trustedTimestamp = parseTrustedTimestamp(message.createdAt);
     const trustedTimestampMs = trustedTimestamp ? Date.parse(trustedTimestamp) : null;
     const nextTimestampMs =
@@ -312,11 +334,28 @@ function buildImportedMessages(
           : previousTimestampMs + 1;
     previousTimestampMs = nextTimestampMs;
 
-    return {
+    if (index < startIndex) return;
+
+    importedMessages.push({
       role: message.role,
       characterId: message.characterId === null ? null : (characterIdMap[message.characterId] ?? null),
       content: message.content,
       createdAt: new Date(nextTimestampMs).toISOString(),
-    };
+      extra: {
+        displayText: null,
+        isGenerated: message.role !== "user",
+        tokenCount: null,
+        generationInfo: null,
+        lanTransfer: {
+          fingerprint: message.fingerprint,
+          sourceCharacterId: message.characterId,
+        },
+      },
+      swipeExtra: {
+        lanTransfer: { fingerprint: message.fingerprint },
+      },
+    });
   });
+
+  return importedMessages;
 }
