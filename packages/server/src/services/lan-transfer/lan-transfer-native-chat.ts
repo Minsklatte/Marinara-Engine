@@ -53,7 +53,7 @@ export async function buildNativeLanChatExport(db: DB, chatId: string): Promise<
     type: "marinara_lan_chat",
     version: 1,
     chat: {
-      id: chat.id,
+      id: syncChatId,
       syncId: syncChatId,
       name: chat.name,
       mode: chat.mode,
@@ -146,13 +146,16 @@ export function validateNativeLanChatExport(
   const chat = value.chat;
   if (
     !isNonEmptyString(chat.id) ||
-    !isOptionalNonEmptyString(chat.syncId) ||
+    !isNonEmptyString(chat.syncId) ||
     typeof chat.name !== "string" ||
     !chat.name.trim() ||
     !isChatMode(chat.mode) ||
     !isArrayOfNonEmptyStrings(chat.characterIds)
   ) {
     return { ok: false, error: "Native chat export chat must include name, mode, and characterIds" };
+  }
+  if (chat.id !== chat.syncId) {
+    return { ok: false, error: "Native chat export chat id must match syncId" };
   }
   if (!isValidMetadata(chat.metadata)) {
     return { ok: false, error: "Native chat export chat metadata must be an object" };
@@ -175,12 +178,23 @@ export function validateNativeLanChatExport(
       (message.characterId !== null &&
         (typeof message.characterId !== "string" || message.characterId.trim().length === 0)) ||
       typeof message.content !== "string" ||
-      !isOptionalNonEmptyString(message.fingerprint)
+      !isNonEmptyString(message.fingerprint)
     ) {
       return { ok: false, error: "Native chat export message must include role, characterId, and content" };
     }
     if (!isOptionalCanonicalTimestamp(message.createdAt)) {
       return { ok: false, error: "Native chat export message createdAt must be a valid string" };
+    }
+    const createdAt =
+      typeof message.createdAt === "string" || message.createdAt === null ? message.createdAt : undefined;
+    const expectedFingerprint = fingerprintLanTransferMessage({
+      role: message.role,
+      characterId: message.characterId,
+      content: message.content,
+      createdAt,
+    });
+    if (message.fingerprint !== expectedFingerprint) {
+      return { ok: false, error: "Native chat export message fingerprint mismatch" };
     }
   }
 

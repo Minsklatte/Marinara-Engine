@@ -45,7 +45,7 @@ function buildNativeChatFixture(
     type: "marinara_lan_chat",
     version: 1,
     chat: {
-      id: options.chat?.id ?? "local-chat-1",
+      id: options.chat?.id ?? "chat-1",
       syncId: options.chat?.syncId ?? "chat-1",
       name: options.chat?.name ?? "Chat",
       mode: "roleplay",
@@ -428,6 +428,49 @@ test("rejects forged native chat manifest character count", () => {
   assert.deepEqual(result, { ok: false, error: "Native chat manifest characterCount mismatch" });
 });
 
+test("rejects native chat package with forged embedded message fingerprint", () => {
+  const validFixture = buildNativeChatFixture();
+  const forgedMessage = {
+    ...validFixture.chat.messages[0],
+    content: "tampered",
+  };
+  const forgedChat = {
+    ...validFixture.chat,
+    messages: [forgedMessage],
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(forgedChat), "utf8");
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            ...validFixture.manifestItem,
+            messageFingerprint: fingerprintLanTransferMessageSequence(forgedChat.messages),
+            messageFingerprints: [forgedMessage.fingerprint],
+            bytes,
+          },
+        ],
+        totalBytes: bytes,
+      },
+      items: [
+        {
+          ...validFixture.item,
+          chat: forgedChat,
+        },
+      ],
+    },
+    { now: () => NOW },
+  );
+
+  assert.deepEqual(result, { ok: false, error: "Native chat export message fingerprint mismatch" });
+});
+
 test("rejects native chat package item with invalid native export", () => {
   const chat = { id: "chat-1", messages: [{ role: "user", content: "hi" }] };
   const bytes = Buffer.byteLength(JSON.stringify(chat), "utf8");
@@ -730,4 +773,50 @@ test("rejects forged native character sync metadata", () => {
     ),
     { ok: false, error: "Character fingerprint mismatch" },
   );
+});
+
+test("rejects tampered native character envelope content with self-consistent metadata", () => {
+  const { envelope, fingerprint } = buildNativeCharacterFixture();
+  const tamperedEnvelope = structuredClone(envelope);
+  tamperedEnvelope.data.data.description = "tampered";
+  tamperedEnvelope.data.data.extensions.marinara_lan_transfer.fingerprint = fingerprint;
+  const bytes = Buffer.byteLength(JSON.stringify(tamperedEnvelope), "utf8");
+  const result = validateLanTransferPackage(
+    {
+      version: 1,
+      manifest: {
+        version: 1,
+        createdAt: "2026-05-19T00:00:00.000Z",
+        expiresAt: FUTURE_EXPIRES_AT,
+        sourceApp: "Marinara Engine",
+        sourceVersion: "1.6.0",
+        items: [
+          {
+            type: "character",
+            id: "char-1",
+            syncId: "char-1",
+            name: "Character",
+            format: "native",
+            fingerprint,
+            bytes,
+          },
+        ],
+        totalBytes: bytes,
+      },
+      items: [
+        {
+          type: "character",
+          id: "char-1",
+          syncId: "char-1",
+          name: "Character",
+          format: "native",
+          fingerprint,
+          envelope: tamperedEnvelope,
+        },
+      ],
+    },
+    { now: () => NOW },
+  );
+
+  assert.deepEqual(result, { ok: false, error: "Character fingerprint mismatch" });
 });

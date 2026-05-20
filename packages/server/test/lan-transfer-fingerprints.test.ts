@@ -26,6 +26,29 @@ test("character fingerprint ignores export timestamp and LAN sync extension", as
   assert.equal(fingerprintNativeCharacterEnvelope(base), fingerprintNativeCharacterEnvelope(later));
 });
 
+test("character fingerprint stays stable when LAN sync metadata adds the only extension", async () => {
+  const { fingerprintNativeCharacterEnvelope, withLanTransferCharacterSyncMetadata } = await import(
+    "../src/services/lan-transfer/lan-transfer-fingerprints.js"
+  );
+
+  const base = {
+    type: "marinara_character",
+    version: 1,
+    data: {
+      spec: "chara_card_v2",
+      spec_version: "2.0",
+      data: { name: "Alicia", description: "same" },
+    },
+  };
+  const fingerprint = fingerprintNativeCharacterEnvelope(base);
+  const withSync = withLanTransferCharacterSyncMetadata(base, {
+    syncId: "source-character",
+    fingerprint,
+  });
+
+  assert.equal(fingerprintNativeCharacterEnvelope(withSync), fingerprint);
+});
+
 test("character fingerprints are stable across reordered object keys", async () => {
   const { fingerprintNativeCharacterEnvelope } = await import(
     "../src/services/lan-transfer/lan-transfer-fingerprints.js"

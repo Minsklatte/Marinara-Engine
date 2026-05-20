@@ -493,7 +493,7 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
     if (item.id !== item.syncId || readLanTransferSyncId(item.envelope) !== item.syncId) {
       return { ok: false, error: "Character package item must match sync identity" };
     }
-    if (readLanTransferCharacterFingerprint(item.envelope) !== item.fingerprint) {
+    if (fingerprintNativeCharacterEnvelope(item.envelope) !== item.fingerprint) {
       return { ok: false, error: "Character fingerprint mismatch" };
     }
     return { ok: true };
@@ -581,6 +581,9 @@ function validateManifestItemMatchesPackageItem(
     if (manifestItem.syncId !== packageItem.syncId || manifestItem.fingerprint !== packageItem.fingerprint) {
       return { ok: false, error: "Character sync metadata mismatch" };
     }
+    if (manifestItem.fingerprint !== fingerprintNativeCharacterEnvelope(packageItem.envelope)) {
+      return { ok: false, error: "Character fingerprint mismatch" };
+    }
   }
 
   return { ok: true };
@@ -596,20 +599,6 @@ function isArrayOfNonEmptyStrings(value: unknown): value is string[] {
 
 function arraysEqual(left: unknown, right: string[]): boolean {
   return Array.isArray(left) && left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function readLanTransferCharacterFingerprint(envelope: unknown): string | null {
-  if (!isRecord(envelope)) return null;
-  const outerData = envelope.data;
-  if (!isRecord(outerData)) return null;
-  const cardData = outerData.data;
-  if (!isRecord(cardData)) return null;
-  const extensions = cardData.extensions;
-  if (!isRecord(extensions)) return null;
-  const metadata = extensions.marinara_lan_transfer;
-  if (!isRecord(metadata)) return null;
-  const fingerprint = metadata.fingerprint;
-  return typeof fingerprint === "string" && fingerprint.trim().length > 0 ? fingerprint : null;
 }
 
 function isNativeCharacterEnvelope(value: unknown): value is Record<string, unknown> {

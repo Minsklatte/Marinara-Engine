@@ -98,6 +98,9 @@ test("native LAN chat import drops unmapped source character IDs", async () =>
 test("native LAN chat import keeps source order when timestamps collide", async () =>
   withDb(async (db) => {
     const { importNativeLanChat } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
+    const { fingerprintLanTransferMessage } = await import(
+      "../src/services/lan-transfer/lan-transfer-fingerprints.js"
+    );
     const characters = createCharactersStorage(db);
     const chats = createChatsStorage(db);
     const sourceCharacterId = "source-character";
@@ -112,13 +115,36 @@ test("native LAN chat import keeps source order when timestamps collide", async 
         version: 1,
         chat: {
           id: "source-chat",
+          syncId: "source-chat",
           name: "Imported chat",
           mode: "roleplay",
           characterIds: [sourceCharacterId],
         },
         messages: [
-          { role: "assistant", characterId: sourceCharacterId, content: "First", createdAt },
-          { role: "assistant", characterId: sourceCharacterId, content: "Second", createdAt },
+          {
+            role: "assistant",
+            characterId: sourceCharacterId,
+            content: "First",
+            createdAt,
+            fingerprint: fingerprintLanTransferMessage({
+              role: "assistant",
+              characterId: sourceCharacterId,
+              content: "First",
+              createdAt,
+            }),
+          },
+          {
+            role: "assistant",
+            characterId: sourceCharacterId,
+            content: "Second",
+            createdAt,
+            fingerprint: fingerprintLanTransferMessage({
+              role: "assistant",
+              characterId: sourceCharacterId,
+              content: "Second",
+              createdAt,
+            }),
+          },
         ],
       },
       { [sourceCharacterId]: importedCharacter.id },
@@ -207,6 +233,7 @@ test("native LAN chat export emits stable sync IDs and message fingerprints", as
 
     const exported = await buildNativeLanChatExport(db, chat.id);
 
+    assert.equal(exported.chat.id, "sync-chat-ari");
     assert.equal(exported.chat.syncId, "sync-chat-ari");
     assert.deepEqual(exported.chat.characterIds, ["sync-character-ari", fallbackCharacter.id]);
     assert.deepEqual(
@@ -298,8 +325,12 @@ test("LAN package for a chat includes its referenced character before the native
 test("LAN package import skips native chat when required character mappings are missing", async () =>
   withDb(async (db) => {
     const { importLanTransferPackage } = await import("../src/services/lan-transfer/lan-transfer-package.js");
+    const { fingerprintLanTransferMessage } = await import(
+      "../src/services/lan-transfer/lan-transfer-fingerprints.js"
+    );
     const chats = createChatsStorage(db);
     const sourceCharacterId = "source-character";
+    const message = { role: "assistant", characterId: sourceCharacterId, content: "Hello" } as const;
     const pkg = {
       version: 1,
       manifest: {
@@ -346,11 +377,12 @@ test("LAN package import skips native chat when required character mappings are 
             version: 1,
             chat: {
               id: "source-chat",
+              syncId: "source-chat",
               name: "Ari chat",
               mode: "roleplay",
               characterIds: [sourceCharacterId],
             },
-            messages: [{ role: "assistant", characterId: sourceCharacterId, content: "Hello" }],
+            messages: [{ ...message, fingerprint: fingerprintLanTransferMessage(message) }],
           },
         },
       ],
@@ -379,26 +411,47 @@ test("native LAN chat export validator rejects unsafe shapes", async () => {
   const { collectNativeLanChatCharacterIds, validateNativeLanChatExport } = await import(
     "../src/services/lan-transfer/lan-transfer-native-chat.js"
   );
+  const { fingerprintLanTransferMessage } = await import(
+    "../src/services/lan-transfer/lan-transfer-fingerprints.js"
+  );
+  const message = {
+    role: "assistant",
+    characterId: "source-character",
+    content: "Hello",
+  } as const;
   const baseExport = {
     type: "marinara_lan_chat",
     version: 1,
     chat: {
       id: "source-chat",
+      syncId: "source-chat",
       name: "Imported chat",
       mode: "roleplay",
       characterIds: ["source-character"],
     },
-    messages: [{ role: "assistant", characterId: "source-character", content: "Hello" }],
+    messages: [{ ...message, fingerprint: fingerprintLanTransferMessage(message) }],
   };
 
   assert.equal(validateNativeLanChatExport(baseExport).ok, true);
   const characterlessExport = {
     ...baseExport,
     chat: { ...baseExport.chat, characterIds: [] },
-    messages: [{ role: "user", characterId: null, content: "Hello" }],
+    messages: [
+      {
+        role: "user",
+        characterId: null,
+        content: "Hello",
+        fingerprint: fingerprintLanTransferMessage({ role: "user", characterId: null, content: "Hello" }),
+      },
+    ],
   };
   assert.equal(validateNativeLanChatExport(characterlessExport).ok, true);
   assert.deepEqual(collectNativeLanChatCharacterIds(characterlessExport as any), []);
+  assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, syncId: "" } }).ok, false);
+  assert.equal(
+    validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, syncId: undefined } }).ok,
+    false,
+  );
   assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, name: "" } }).ok, false);
   assert.equal(
     validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, characterIds: [""] } }).ok,
@@ -411,23 +464,37 @@ test("native LAN chat export validator rejects unsafe shapes", async () => {
   assert.equal(
     validateNativeLanChatExport({
       ...baseExport,
-      messages: [{ role: "assistant", characterId: "", content: "Hello" }],
+      messages: [{ ...baseExport.messages[0], characterId: "" }],
     }).ok,
     false,
   );
   assert.equal(
     validateNativeLanChatExport({
       ...baseExport,
-      messages: [{ role: "assistant", characterId: null, content: "Hello", createdAt: 1 }],
+      messages: [{ ...baseExport.messages[0], characterId: null, createdAt: 1 }],
     }).ok,
     false,
   );
   assert.equal(
     validateNativeLanChatExport({
       ...baseExport,
-      messages: [{ role: "assistant", characterId: null, content: "Hello", createdAt: "0" }],
+      messages: [{ ...baseExport.messages[0], characterId: null, createdAt: "0" }],
     }).ok,
     false,
+  );
+  assert.equal(
+    validateNativeLanChatExport({
+      ...baseExport,
+      messages: [{ ...baseExport.messages[0], fingerprint: "" }],
+    }).ok,
+    false,
+  );
+  assert.deepEqual(
+    validateNativeLanChatExport({
+      ...baseExport,
+      messages: [{ ...baseExport.messages[0], fingerprint: "forged" }],
+    }),
+    { ok: false, error: "Native chat export message fingerprint mismatch" },
   );
   assert.equal(
     validateNativeLanChatExport({

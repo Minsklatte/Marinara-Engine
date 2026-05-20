@@ -95,6 +95,9 @@ function stripVolatileCharacterEnvelopeFields(value: unknown): unknown {
     const cardData = cloned.data.data;
     if (isRecord(cardData.extensions)) {
       delete cardData.extensions[LAN_TRANSFER_EXTENSION_KEY];
+      if (Object.keys(cardData.extensions).length === 0) {
+        delete cardData.extensions;
+      }
     }
   }
   return cloned;
