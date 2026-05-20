@@ -104,7 +104,7 @@ The `downloadToken` authorizes access to the temporary offer. The `secret` decry
 
 The `from` field is an origin only: scheme, host, and optional port. It must not include credentials, a path, a query string, or a fragment.
 
-Phase 2 payloads may include bounded `origins` alongside backward-compatible `from`. These origins are sender-advertised self-discovery candidates, not LAN scanning. Receivers cap the candidate list, try candidates in order, validate every candidate against the LAN/SSRF policy before each fetch, and return the origin that actually worked in preview/import responses.
+Phase 2 payloads may include bounded `origins` alongside backward-compatible `from`. These origins are sender-advertised self-discovery candidates, not LAN scanning. Receivers cap the candidate list, try candidates in order, validate every candidate against the LAN/SSRF policy before each fetch, and return the origin that actually worked in preview responses.
 
 The payload may later be represented as a `marinara-transfer:` URI, but raw JSON is easier to debug for MVP. A URI wrapper must still carry the same fields.
 
@@ -176,7 +176,7 @@ Request body:
 ```ts
 {
   items: Array<
-    | { type: "chat"; id: string; format?: "jsonl" }
+    | { type: "chat"; id: string; format?: "jsonl" | "native" }
     | { type: "character"; id: string; format?: "native" }
   >;
 }
@@ -189,11 +189,11 @@ Response:
   offerId: string;
   transferPayload: string;
   expiresAt: string;
-  from: string;
-  origins?: string[];
   manifest: LanTransferManifest;
 }
 ```
+
+The sender origins are embedded in `transferPayload` as backward-compatible `from` plus optional bounded `origins`; they are not repeated as top-level response fields.
 
 ### `POST /api/lan-transfer/offers/:offerId/manifest`
 
@@ -292,7 +292,6 @@ Response:
 
 ```ts
 {
-  from: string;
   imported: {
     chats: number;
     characters: number;
@@ -301,6 +300,8 @@ Response:
   skipped: Array<{ type: string; name?: string; reason: string }>;
 }
 ```
+
+Preview returns the working sender origin for display. Import returns the import summary only.
 
 The implementation uses internal helpers for decrypted package validation and import. It must not expose a public route that accepts arbitrary decrypted transfer packages for MVP.
 
