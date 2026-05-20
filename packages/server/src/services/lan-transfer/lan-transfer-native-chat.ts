@@ -1,5 +1,6 @@
 import type { ChatMode, MessageRole } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
+import { parseTrustedTimestamp } from "../import/import-timestamps.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
 
 export interface NativeLanChatExport {
@@ -70,7 +71,7 @@ export async function importNativeLanChat(
   if (!validation.ok) return { success: false, error: validation.error };
 
   try {
-    const nativeChat = validation.exported;
+    const nativeChat = validation.chat;
     const chats = createChatsStorage(db);
     const characterIds = nativeChat.chat.characterIds
       .map((id) => characterIdMap[id])
@@ -88,9 +89,9 @@ export async function importNativeLanChat(
 
     await chats.createMessagesBatch(
       chat.id,
-      nativeChat.messages.map((message) => ({
+      buildImportedMessages(nativeChat.messages, characterIdMap).map((message) => ({
         role: message.role,
-        characterId: message.characterId === null ? null : (characterIdMap[message.characterId] ?? null),
+        characterId: message.characterId,
         content: message.content,
         createdAt: message.createdAt,
       })),
@@ -113,9 +114,9 @@ export function collectNativeLanChatCharacterIds(exported: NativeLanChatExport):
   return [...ids];
 }
 
-function validateNativeLanChatExport(
+export function validateNativeLanChatExport(
   value: unknown,
-): { ok: true; exported: NativeLanChatExport } | { ok: false; error: string } {
+): { ok: true; chat: NativeLanChatExport } | { ok: false; error: string } {
   if (!isRecord(value)) return { ok: false, error: "Native chat export must be an object" };
   if (value.type !== "marinara_lan_chat") return { ok: false, error: "Unsupported native chat export type" };
   if (value.version !== 1) return { ok: false, error: "Unsupported native chat export version" };
@@ -126,27 +127,35 @@ function validateNativeLanChatExport(
   if (
     typeof chat.id !== "string" ||
     typeof chat.name !== "string" ||
+    !chat.name.trim() ||
     !isChatMode(chat.mode) ||
-    !isStringArray(chat.characterIds)
+    !isNonEmptyStringArray(chat.characterIds)
   ) {
     return { ok: false, error: "Native chat export chat must include name, mode, and characterIds" };
   }
   if (!isValidMetadata(chat.metadata)) {
     return { ok: false, error: "Native chat export chat metadata must be an object" };
   }
+  if (!isOptionalTrustedTimestamp(chat.createdAt) || !isOptionalTrustedTimestamp(chat.updatedAt)) {
+    return { ok: false, error: "Native chat export chat timestamps must be valid strings" };
+  }
 
   for (const message of value.messages) {
     if (!isRecord(message)) return { ok: false, error: "Native chat export message must be an object" };
     if (
       !isMessageRole(message.role) ||
-      (message.characterId !== null && typeof message.characterId !== "string") ||
+      (message.characterId !== null &&
+        (typeof message.characterId !== "string" || message.characterId.trim().length === 0)) ||
       typeof message.content !== "string"
     ) {
       return { ok: false, error: "Native chat export message must include role, characterId, and content" };
     }
+    if (!isOptionalTrustedTimestamp(message.createdAt)) {
+      return { ok: false, error: "Native chat export message createdAt must be a valid string" };
+    }
   }
 
-  return { ok: true, exported: value as unknown as NativeLanChatExport };
+  return { ok: true, chat: value as unknown as NativeLanChatExport };
 }
 
 function parseCharacterIds(value: unknown): string[] {
@@ -161,11 +170,12 @@ function parseCharacterIds(value: unknown): string[] {
 }
 
 function parseMetadata(value: unknown): unknown {
-  if (typeof value !== "string") return value;
+  if (typeof value !== "string") return isRecord(value) ? value : {};
   try {
-    return JSON.parse(value);
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : {};
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -181,10 +191,43 @@ function isMessageRole(value: unknown): value is MessageRole {
   return typeof value === "string" && MESSAGE_ROLES.includes(value as MessageRole);
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
+function isNonEmptyStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0);
 }
 
 function isValidMetadata(value: unknown): boolean {
   return value === undefined || value === null || isRecord(value);
+}
+
+function isOptionalTrustedTimestamp(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === "string" && parseTrustedTimestamp(value) !== null);
+}
+
+function buildImportedMessages(
+  messages: NativeLanChatExport["messages"],
+  characterIdMap: Record<string, string>,
+): NativeLanChatExport["messages"] {
+  let previousTimestampMs: number | null = null;
+  const fallbackBaseMs = Date.now();
+
+  return messages.map((message, index) => {
+    const trustedTimestamp = parseTrustedTimestamp(message.createdAt);
+    const trustedTimestampMs = trustedTimestamp ? Date.parse(trustedTimestamp) : null;
+    const nextTimestampMs =
+      trustedTimestampMs !== null
+        ? previousTimestampMs === null || trustedTimestampMs > previousTimestampMs
+          ? trustedTimestampMs
+          : previousTimestampMs + 1
+        : previousTimestampMs === null
+          ? fallbackBaseMs + index
+          : previousTimestampMs + 1;
+    previousTimestampMs = nextTimestampMs;
+
+    return {
+      role: message.role,
+      characterId: message.characterId === null ? null : (characterIdMap[message.characterId] ?? null),
+      content: message.content,
+      createdAt: new Date(nextTimestampMs).toISOString(),
+    };
+  });
 }

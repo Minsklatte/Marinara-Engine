@@ -95,6 +95,99 @@ test("native LAN chat import drops unmapped source character IDs", async () =>
     assert.equal(messages[1]?.characterId, null);
   }));
 
+test("native LAN chat import keeps source order when timestamps collide", async () =>
+  withDb(async (db) => {
+    const { importNativeLanChat } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
+    const characters = createCharactersStorage(db);
+    const chats = createChatsStorage(db);
+    const sourceCharacterId = "source-character";
+    const importedCharacter = await characters.create({ name: "Ari imported", description: "", first_mes: "Hi" });
+    assert.ok(importedCharacter?.id);
+    const createdAt = "2026-05-20T12:00:00.000Z";
+
+    const result = await importNativeLanChat(
+      db,
+      {
+        type: "marinara_lan_chat",
+        version: 1,
+        chat: {
+          id: "source-chat",
+          name: "Imported chat",
+          mode: "roleplay",
+          characterIds: [sourceCharacterId],
+        },
+        messages: [
+          { role: "assistant", characterId: sourceCharacterId, content: "First", createdAt },
+          { role: "assistant", characterId: sourceCharacterId, content: "Second", createdAt },
+        ],
+      },
+      { [sourceCharacterId]: importedCharacter.id },
+    );
+
+    assert.equal(result.success, true);
+    assert.ok(result.id);
+    const messages = await chats.listMessages(result.id);
+    assert.deepEqual(
+      messages.map((message) => message.content),
+      ["First", "Second"],
+    );
+    assert.deepEqual(
+      messages.map((message) => message.createdAt),
+      ["2026-05-20T12:00:00.000Z", "2026-05-20T12:00:00.001Z"],
+    );
+  }));
+
+test("native LAN chat export emits object metadata", async () =>
+  withDb(async (db) => {
+    const { buildNativeLanChatExport } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
+    const chats = createChatsStorage(db);
+    const chat = await chats.create({ name: "Ari chat", mode: "roleplay", characterIds: [] });
+    assert.ok(chat?.id);
+
+    const exported = await buildNativeLanChatExport(db, chat.id);
+
+    assert.equal(typeof exported.chat.metadata, "object");
+    assert.equal(Array.isArray(exported.chat.metadata), false);
+    assert.notEqual(exported.chat.metadata, null);
+  }));
+
+test("native LAN chat export validator rejects unsafe shapes", async () => {
+  const { validateNativeLanChatExport } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
+  const baseExport = {
+    type: "marinara_lan_chat",
+    version: 1,
+    chat: {
+      id: "source-chat",
+      name: "Imported chat",
+      mode: "roleplay",
+      characterIds: ["source-character"],
+    },
+    messages: [{ role: "assistant", characterId: "source-character", content: "Hello" }],
+  };
+
+  assert.equal(validateNativeLanChatExport(baseExport).ok, true);
+  assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, name: "" } }).ok, false);
+  assert.equal(
+    validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, characterIds: [""] } }).ok,
+    false,
+  );
+  assert.equal(
+    validateNativeLanChatExport({
+      ...baseExport,
+      messages: [{ role: "assistant", characterId: "", content: "Hello" }],
+    }).ok,
+    false,
+  );
+  assert.equal(
+    validateNativeLanChatExport({
+      ...baseExport,
+      messages: [{ role: "assistant", characterId: null, content: "Hello", createdAt: 1 }],
+    }).ok,
+    false,
+  );
+  assert.equal(validateNativeLanChatExport({ ...baseExport, chat: { ...baseExport.chat, metadata: [] } }).ok, false);
+});
+
 test("native LAN chat import rejects invalid exports", async () =>
   withDb(async (db) => {
     const { importNativeLanChat } = await import("../src/services/lan-transfer/lan-transfer-native-chat.js");
