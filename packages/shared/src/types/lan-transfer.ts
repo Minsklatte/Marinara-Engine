@@ -56,23 +56,23 @@ export interface LanTransferManifest {
     | {
         type: "chat";
         id: string;
-        syncId: string;
+        syncId?: string;
         name: string;
         format: "native";
         messageCount: number;
         characterCount: number;
-        characterIds: string[];
-        messageFingerprint: string;
-        messageFingerprints: string[];
+        characterIds?: string[];
+        messageFingerprint?: string;
+        messageFingerprints?: string[];
         bytes: number;
       }
     | {
         type: "character";
         id: string;
-        syncId: string;
+        syncId?: string;
         name: string;
         format: "native";
-        fingerprint: string;
+        fingerprint?: string;
         bytes: number;
       }
   >;
@@ -84,14 +84,14 @@ export interface LanTransferPackage {
   manifest: LanTransferManifest;
   items: Array<
     | { type: "chat"; id: string; name: string; format: "jsonl"; content: string }
-    | { type: "chat"; id: string; syncId: string; name: string; format: "native"; chat: unknown }
+    | { type: "chat"; id: string; syncId?: string; name: string; format: "native"; chat: unknown }
     | {
         type: "character";
         id: string;
-        syncId: string;
+        syncId?: string;
         name: string;
         format: "native";
-        fingerprint: string;
+        fingerprint?: string;
         envelope: unknown;
       }
   >;
