@@ -3,6 +3,34 @@ export const LAN_TRANSFER_VERSION = 1 as const;
 
 export type LanTransferChatFormat = "jsonl" | "native";
 
+export type LanTransferImportMode = "smart" | "copy";
+
+export type LanTransferPreviewAction =
+  | {
+      type: "character";
+      sourceId: string;
+      name: string;
+      action: "reuse" | "import-copy";
+      targetId?: string;
+      reason: string;
+    }
+  | {
+      type: "chat";
+      sourceId: string;
+      name: string;
+      action: "skip" | "append" | "import-copy" | "conflict-copy";
+      targetId?: string;
+      messageCount: number;
+      appendCount?: number;
+      linkedCharacterNames?: string[];
+      reason: string;
+    };
+
+export interface LanTransferPreviewAnalysis {
+  mode: "smart";
+  actions: LanTransferPreviewAction[];
+}
+
 export type LanTransferItemRequest =
   | { type: "chat"; id: string; format?: LanTransferChatFormat }
   | { type: "character"; id: string; format?: "native" };
@@ -28,13 +56,25 @@ export interface LanTransferManifest {
     | {
         type: "chat";
         id: string;
+        syncId: string;
         name: string;
         format: "native";
         messageCount: number;
         characterCount: number;
+        characterIds: string[];
+        messageFingerprint: string;
+        messageFingerprints: string[];
         bytes: number;
       }
-    | { type: "character"; id: string; name: string; format: "native"; bytes: number }
+    | {
+        type: "character";
+        id: string;
+        syncId: string;
+        name: string;
+        format: "native";
+        fingerprint: string;
+        bytes: number;
+      }
   >;
   totalBytes: number;
 }
@@ -44,8 +84,16 @@ export interface LanTransferPackage {
   manifest: LanTransferManifest;
   items: Array<
     | { type: "chat"; id: string; name: string; format: "jsonl"; content: string }
-    | { type: "chat"; id: string; name: string; format: "native"; chat: unknown }
-    | { type: "character"; id: string; name: string; format: "native"; envelope: unknown }
+    | { type: "chat"; id: string; syncId: string; name: string; format: "native"; chat: unknown }
+    | {
+        type: "character";
+        id: string;
+        syncId: string;
+        name: string;
+        format: "native";
+        fingerprint: string;
+        envelope: unknown;
+      }
   >;
 }
 
@@ -90,11 +138,13 @@ export interface LanTransferPreviewResponse {
   offerId: string;
   expiresAt: string;
   manifest: LanTransferManifest;
+  analysis?: LanTransferPreviewAnalysis;
 }
 
 export interface LanTransferImportFromOfferRequest {
   transferPayload: string;
   options?: {
+    importMode?: LanTransferImportMode;
     chatImportMode?: "new-chat" | "branch";
     characterImportMode?: "new-copy";
   };
@@ -105,6 +155,19 @@ export interface LanTransferImportSummary {
     chats: number;
     characters: number;
   };
+  reused?: {
+    chats: number;
+    characters: number;
+  };
+  appended?: {
+    chats: number;
+    messages: number;
+  };
+  copied?: {
+    chats: number;
+    characters: number;
+  };
   skipped: Array<{ type: string; name?: string; reason: string }>;
   characterIdMap?: Record<string, string>;
+  chatIdMap?: Record<string, string>;
 }
