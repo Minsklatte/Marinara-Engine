@@ -90,6 +90,26 @@ test("builds, validates, and imports characterless native chat packages", async 
     assert.deepEqual(JSON.parse(importedChat.characterIds as string), []);
   }));
 
+test("omitted chat format defaults to native package export", async () =>
+  withDb(async (db) => {
+    const chats = createChatsStorage(db);
+    const chat = await chats.create({ name: "Default native", mode: "roleplay", characterIds: [] });
+    assert.ok(chat?.id);
+
+    const pkg = await buildLanTransferPackage(
+      { db } as any,
+      [{ type: "chat", id: chat.id }],
+      "2999-01-01T00:00:00.000Z",
+    );
+
+    assert.equal(pkg.items.length, 1);
+    assert.equal(pkg.items[0]?.type, "chat");
+    assert.equal((pkg.items[0] as any).format, "native");
+    assert.equal(pkg.manifest.items[0]?.type, "chat");
+    assert.equal((pkg.manifest.items[0] as any).format, "native");
+    assert.equal(validateLanTransferPackage(pkg).ok, true);
+  }));
+
 test("imports explicit JSONL chat packages through package import", async () =>
   withDb(async (db) => {
     const content = [
@@ -163,6 +183,50 @@ test("accepts a native chat package item with matching manifest bytes", () => {
   );
 
   assert.equal(result.ok, true);
+});
+
+test("rejects native chat package when wrapper identity differs from embedded chat", () => {
+  const chat = {
+    type: "marinara_lan_chat",
+    version: 1,
+    chat: { id: "chat-1", name: "Chat", mode: "roleplay", characterIds: ["char-1"] },
+    messages: [{ role: "user", characterId: null, content: "hi" }],
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(chat), "utf8");
+
+  for (const wrapper of [
+    { id: "chat-2", name: "Chat" },
+    { id: "chat-1", name: "Other chat" },
+  ]) {
+    const result = validateLanTransferPackage(
+      {
+        version: 1,
+        manifest: {
+          version: 1,
+          createdAt: "2026-05-19T00:00:00.000Z",
+          expiresAt: FUTURE_EXPIRES_AT,
+          sourceApp: "Marinara Engine",
+          sourceVersion: "1.6.0",
+          items: [
+            {
+              type: "chat",
+              id: wrapper.id,
+              name: wrapper.name,
+              format: "native",
+              messageCount: 1,
+              characterCount: 1,
+              bytes,
+            },
+          ],
+          totalBytes: bytes,
+        },
+        items: [{ type: "chat", id: wrapper.id, name: wrapper.name, format: "native", chat }],
+      },
+      { now: () => NOW },
+    );
+
+    assert.deepEqual(result, { ok: false, error: "Native chat package item must match embedded chat identity" });
+  }
 });
 
 test("rejects native chat package bytes that match stray content instead of chat", () => {

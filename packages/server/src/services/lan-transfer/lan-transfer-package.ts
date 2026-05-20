@@ -389,7 +389,12 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
       if (!Object.prototype.hasOwnProperty.call(item, "chat")) {
         return { ok: false, error: "Native chat package item chat must be present" };
       }
-      return validateNativeLanChatExport(item.chat);
+      const validation = validateNativeLanChatExport(item.chat);
+      if (!validation.ok) return validation;
+      if (item.id !== validation.chat.chat.id || item.name !== validation.chat.chat.name) {
+        return { ok: false, error: "Native chat package item must match embedded chat identity" };
+      }
+      return { ok: true };
     }
     return { ok: false, error: "Chat package item must use jsonl or native format" };
   }
