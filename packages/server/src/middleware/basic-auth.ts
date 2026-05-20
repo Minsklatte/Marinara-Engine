@@ -113,6 +113,19 @@ const LOCKDOWN_JSON_MESSAGE =
   "or explicitly opt in with ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK=true for LAN/private clients. " +
   "Set ALLOW_UNAUTHENTICATED_REMOTE=true only if unauthenticated public access is intentional.";
 
+export function isLanTransferTokenEndpoint(pathname: string, method: string): boolean {
+  if (method.toUpperCase() !== "POST") return false;
+  return /^\/api\/lan-transfer\/offers\/[^/]+\/(?:manifest|download)$/.test(pathname);
+}
+
+function getRequestPathname(request: FastifyRequest): string {
+  try {
+    return new URL(request.url, "http://localhost").pathname;
+  } catch {
+    return request.url.split("?")[0] ?? request.url;
+  }
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -332,6 +345,10 @@ export function isBasicAuthSatisfied(request: FastifyRequest): boolean {
 export function basicAuthHook(request: FastifyRequest, reply: FastifyReply, done: () => void) {
   // Exempt the health endpoint so external probes still work
   if (request.url === "/api/health" || request.url.startsWith("/api/health?")) {
+    return done();
+  }
+
+  if (isLanTransferTokenEndpoint(getRequestPathname(request), request.method)) {
     return done();
   }
 

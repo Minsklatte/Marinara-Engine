@@ -22,6 +22,7 @@ import {
   parseLanTransferPayload,
   serializeLanTransferPayload,
 } from "../src/services/lan-transfer/lan-transfer-payload.js";
+import { basicAuthHook } from "../src/middleware/basic-auth.js";
 import { createCharactersStorage } from "../src/services/storage/characters.storage.js";
 
 type EnvPatch = Record<string, string | undefined>;
@@ -72,6 +73,7 @@ function withEnv<T>(patch: EnvPatch, fn: () => Promise<T>) {
 async function withLanTransferApp<T>(
   env: EnvPatch,
   fn: (app: FastifyInstance) => Promise<T>,
+  options: { basicAuth?: boolean } = {},
 ): Promise<T> {
   const root = mkdtempSync(join(tmpdir(), "marinara-lan-transfer-routes-"));
 
@@ -88,6 +90,7 @@ async function withLanTransferApp<T>(
       const db = await createFileNativeDB();
       const app = Fastify({ logger: false });
       app.decorate("db", db);
+      if (options.basicAuth) app.addHook("onRequest", basicAuthHook);
       await app.register(lanTransferRoutes, { prefix: "/api/lan-transfer" });
       await app.ready();
 
@@ -100,6 +103,17 @@ async function withLanTransferApp<T>(
       }
     },
   );
+}
+
+function seedLanTransferOffer(offerId: string, downloadToken: string) {
+  lanTransferOfferStore.delete(offerId);
+  lanTransferOfferStore.put({
+    offerId,
+    downloadTokenHash: hashLanTransferToken(downloadToken),
+    expiresAtMs: Date.now() + 60_000,
+    manifest: testManifest,
+    encryptedPackage: testEncryptedPackage,
+  });
 }
 
 test("create offer with no items returns 400 when LAN transfer is enabled", async () =>
@@ -269,6 +283,155 @@ test("download consumes an offer once after token verification", async () =>
     assert.deepEqual(JSON.parse(first.body), testEncryptedPackage);
     assert.equal(second.statusCode, 404, second.body);
   }));
+
+test("Basic Auth lets token-gated LAN manifest and download requests reach route validation", async () =>
+  withLanTransferApp(
+    {
+      LAN_TRANSFER_ENABLED: "1",
+      BASIC_AUTH_USER: "sender",
+      BASIC_AUTH_PASS: "secret",
+      ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK: undefined,
+      ALLOW_UNAUTHENTICATED_REMOTE: undefined,
+    },
+    async (app) => {
+      for (const endpoint of ["manifest", "download"] as const) {
+        const offerId = `route-basic-auth-missing-token-${endpoint}`;
+        seedLanTransferOffer(offerId, "download-token");
+
+        try {
+          const response = await app.inject({
+            method: "POST",
+            url: `/api/lan-transfer/offers/${offerId}/${endpoint}`,
+            remoteAddress: "203.0.113.10",
+            payload: {},
+          });
+
+          assert.equal(response.statusCode, 400, response.body);
+          assert.deepEqual(JSON.parse(response.body), { error: "downloadToken is required" });
+          assert.equal(response.headers["www-authenticate"], undefined);
+        } finally {
+          lanTransferOfferStore.delete(offerId);
+        }
+      }
+    },
+    { basicAuth: true },
+  ));
+
+test("Basic Auth lets valid LAN manifest and download tokens through without credentials", async () =>
+  withLanTransferApp(
+    {
+      LAN_TRANSFER_ENABLED: "1",
+      BASIC_AUTH_USER: "sender",
+      BASIC_AUTH_PASS: "secret",
+      ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK: undefined,
+      ALLOW_UNAUTHENTICATED_REMOTE: undefined,
+    },
+    async (app) => {
+      const manifestOfferId = "route-basic-auth-valid-manifest";
+      const downloadOfferId = "route-basic-auth-valid-download";
+      seedLanTransferOffer(manifestOfferId, "manifest-token");
+      seedLanTransferOffer(downloadOfferId, "download-token");
+
+      try {
+        const manifest = await app.inject({
+          method: "POST",
+          url: `/api/lan-transfer/offers/${manifestOfferId}/manifest`,
+          remoteAddress: "203.0.113.10",
+          payload: { downloadToken: "manifest-token" },
+        });
+        const download = await app.inject({
+          method: "POST",
+          url: `/api/lan-transfer/offers/${downloadOfferId}/download`,
+          remoteAddress: "203.0.113.10",
+          payload: { downloadToken: "download-token" },
+        });
+
+        assert.equal(manifest.statusCode, 200, manifest.body);
+        assert.deepEqual(JSON.parse(manifest.body), {
+          offerId: manifestOfferId,
+          expiresAt: testManifest.expiresAt,
+          consumed: false,
+          manifest: testManifest,
+        });
+        assert.equal(download.statusCode, 200, download.body);
+        assert.deepEqual(JSON.parse(download.body), testEncryptedPackage);
+      } finally {
+        lanTransferOfferStore.delete(manifestOfferId);
+        lanTransferOfferStore.delete(downloadOfferId);
+      }
+    },
+    { basicAuth: true },
+  ));
+
+test("Basic Auth lets wrong LAN manifest and download tokens fail at route level", async () =>
+  withLanTransferApp(
+    {
+      LAN_TRANSFER_ENABLED: "1",
+      BASIC_AUTH_USER: "sender",
+      BASIC_AUTH_PASS: "secret",
+      ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK: undefined,
+      ALLOW_UNAUTHENTICATED_REMOTE: undefined,
+    },
+    async (app) => {
+      for (const endpoint of ["manifest", "download"] as const) {
+        const offerId = `route-basic-auth-wrong-token-${endpoint}`;
+        seedLanTransferOffer(offerId, "correct-token");
+
+        try {
+          const response = await app.inject({
+            method: "POST",
+            url: `/api/lan-transfer/offers/${offerId}/${endpoint}`,
+            remoteAddress: "203.0.113.10",
+            payload: { downloadToken: "wrong-token" },
+          });
+
+          assert.equal(response.statusCode, 403, response.body);
+          assert.deepEqual(JSON.parse(response.body), { error: "Invalid LAN transfer token" });
+          assert.equal(response.headers["www-authenticate"], undefined);
+        } finally {
+          lanTransferOfferStore.delete(offerId);
+        }
+      }
+    },
+    { basicAuth: true },
+  ));
+
+test("Basic Auth still challenges other LAN transfer routes without credentials", async () =>
+  withLanTransferApp(
+    {
+      LAN_TRANSFER_ENABLED: "1",
+      BASIC_AUTH_USER: "sender",
+      BASIC_AUTH_PASS: "secret",
+      ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK: undefined,
+      ALLOW_UNAUTHENTICATED_REMOTE: undefined,
+    },
+    async (app) => {
+      const requests = [
+        { method: "POST", url: "/api/lan-transfer/offers", payload: { items: [] } },
+        { method: "POST", url: "/api/lan-transfer/preview", payload: { transferPayload: "not-json" } },
+        { method: "POST", url: "/api/lan-transfer/import-from-offer", payload: { transferPayload: "not-json" } },
+        { method: "DELETE", url: "/api/lan-transfer/offers/route-basic-auth-cancel", payload: undefined },
+        { method: "GET", url: "/api/lan-transfer/offers/route-basic-auth-manifest/manifest", payload: undefined },
+        {
+          method: "POST",
+          url: "/api/lan-transfer/offers/route-basic-auth-download/download/extra",
+          payload: { downloadToken: "download-token" },
+        },
+      ] as const;
+
+      for (const request of requests) {
+        const response = await app.inject({
+          ...request,
+          remoteAddress: "203.0.113.10",
+        });
+
+        assert.equal(response.statusCode, 401, response.body);
+        assert.deepEqual(JSON.parse(response.body), { error: "Authentication required" });
+        assert.match(String(response.headers["www-authenticate"]), /^Basic /);
+      }
+    },
+    { basicAuth: true },
+  ));
 
 test("preview rejects public sender origins before fetch", async () =>
   withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
