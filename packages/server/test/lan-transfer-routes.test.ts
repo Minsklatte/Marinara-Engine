@@ -176,6 +176,19 @@ test("origin helper preserves request origin under the candidate cap", async () 
   assert.equal(origins.at(-1), "http://localhost:7860");
 });
 
+test("origin helper normalizes and dedupes configured origin", async () => {
+  const { resolveLanTransferOrigins } = await import("../src/services/lan-transfer/lan-transfer-origins.js");
+  const origins = resolveLanTransferOrigins({
+    protocol: "http",
+    requestHost: "localhost:7860",
+    configuredOrigin: "http://user:pass@localhost:7860/path?debug=1#section",
+    interfaceAddresses: [],
+    port: 7860,
+  });
+
+  assert.deepEqual(origins, ["http://localhost:7860"]);
+});
+
 test("create offer advertises configured public origin first", async () =>
   withLanTransferApp(
     {

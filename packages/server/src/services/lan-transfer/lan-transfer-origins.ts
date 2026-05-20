@@ -29,7 +29,9 @@ export function resolveLanTransferOrigins(input: ResolveLanTransferOriginsInput)
   if (requestOrigin) candidates.push(requestOrigin);
 
   const origins = Array.from(new Set(candidates.map(normalizeOrigin).filter((origin): origin is string => !!origin)));
-  const requestOriginIndex = requestOrigin ? origins.indexOf(requestOrigin) : -1;
+  if (!requestOrigin) return origins.slice(0, 5);
+
+  const requestOriginIndex = origins.indexOf(requestOrigin);
   if (origins.length <= 5 || requestOriginIndex === -1 || requestOriginIndex < 5) {
     return origins.slice(0, 5);
   }
