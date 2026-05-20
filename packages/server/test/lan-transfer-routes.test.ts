@@ -332,6 +332,84 @@ test("preview fetches a sender manifest from a validated loopback origin", async
     });
   }));
 
+test("preview tries sender origins in order until one succeeds", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const offerId = "route-preview-origin-fallback";
+    const downloadToken = "download-token";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: testManifest,
+      encryptedPackage: testEncryptedPackage,
+    });
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    const workingOrigin = `http://127.0.0.1:${address.port}`;
+
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: "http://127.0.0.1:1",
+      origins: ["http://127.0.0.1:1", workingOrigin],
+      offerId,
+      downloadToken,
+      secret: "secret",
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/preview",
+      payload: { transferPayload },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(JSON.parse(response.body).from, workingOrigin);
+  }));
+
+test("preview skips invalid sender origins before trying a later valid origin", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const offerId = "route-preview-origin-validation-skip";
+    const downloadToken = "download-token";
+    lanTransferOfferStore.delete(offerId);
+    lanTransferOfferStore.put({
+      offerId,
+      downloadTokenHash: hashLanTransferToken(downloadToken),
+      expiresAtMs: Date.now() + 60_000,
+      manifest: testManifest,
+      encryptedPackage: testEncryptedPackage,
+    });
+
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.equal(typeof address, "object");
+    assert.notEqual(address, null);
+    const workingOrigin = `http://127.0.0.1:${address.port}`;
+
+    const transferPayload = serializeLanTransferPayload({
+      type: LAN_TRANSFER_TYPE,
+      version: LAN_TRANSFER_VERSION,
+      from: "http://8.8.8.8:7860",
+      origins: ["http://8.8.8.8:7860", workingOrigin],
+      offerId,
+      downloadToken,
+      secret: "secret",
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/preview",
+      payload: { transferPayload },
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(JSON.parse(response.body).from, workingOrigin);
+  }));
+
 test("preview accepts phase-2 payloads with multiple LAN origins", async () =>
   withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
     const offerId = "route-preview-multi-origin";

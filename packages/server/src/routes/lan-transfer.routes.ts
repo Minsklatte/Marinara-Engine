@@ -138,24 +138,21 @@ export async function lanTransferRoutes(app: FastifyInstance) {
     const payloadResult = getTransferPayload(request.body);
     if (!payloadResult.ok) return reply.code(400).send({ error: payloadResult.error });
 
-    const originResult = await validateLanTransferOrigin(payloadResult.payload.from);
-    if (!originResult.ok) return reply.code(400).send({ error: originResult.error });
-
     try {
-      const manifest = await fetchSenderJson<{
+      const result = await fetchFromAnySenderOrigin<{
         offerId: string;
         expiresAt: string;
         manifest: unknown;
-      }>(payloadResult.payload, originResult, "manifest");
+      }>(payloadResult.payload, "manifest");
 
       return reply.send({
-        from: payloadResult.payload.from,
-        offerId: manifest.offerId,
-        expiresAt: manifest.expiresAt,
-        manifest: manifest.manifest,
+        from: result.origin,
+        offerId: result.value.offerId,
+        expiresAt: result.value.expiresAt,
+        manifest: result.value.manifest,
       });
     } catch (err) {
-      return reply.code(502).send({ error: getErrorMessage(err) });
+      return reply.code(getLanTransferFetchStatusCode(err)).send({ error: getErrorMessage(err) });
     }
   });
 
@@ -163,13 +160,9 @@ export async function lanTransferRoutes(app: FastifyInstance) {
     const payloadResult = getTransferPayload(request.body);
     if (!payloadResult.ok) return reply.code(400).send({ error: payloadResult.error });
 
-    const originResult = await validateLanTransferOrigin(payloadResult.payload.from);
-    if (!originResult.ok) return reply.code(400).send({ error: originResult.error });
-
     try {
-      const encryptedPackage = await fetchSenderJson<LanTransferEncryptedPackage>(
+      const { value: encryptedPackage } = await fetchFromAnySenderOrigin<LanTransferEncryptedPackage>(
         payloadResult.payload,
-        originResult,
         "download",
       );
       const plaintext = decryptLanTransferPackage(encryptedPackage, payloadResult.payload.secret);
@@ -180,7 +173,7 @@ export async function lanTransferRoutes(app: FastifyInstance) {
       const summary = await importLanTransferPackage(app, validation.package);
       return reply.send(summary);
     } catch (err) {
-      return reply.code(502).send({ error: getErrorMessage(err) });
+      return reply.code(getLanTransferFetchStatusCode(err)).send({ error: getErrorMessage(err) });
     }
   });
 }
@@ -225,6 +218,37 @@ function getRequestOrigins(request: FastifyRequest): string[] {
     configuredOrigin: getLanTransferPublicOrigin(),
     port: getPort(),
   });
+}
+
+async function fetchFromAnySenderOrigin<T>(
+  payload: LanTransferPayload,
+  endpoint: "manifest" | "download",
+): Promise<{ origin: string; value: T }> {
+  const origins = Array.from(new Set([...(payload.origins ?? []), payload.from])).slice(0, 5);
+  const errors: string[] = [];
+  let attemptedFetch = false;
+
+  for (const origin of origins) {
+    const originResult = await validateLanTransferOrigin(origin);
+    if (!originResult.ok) {
+      errors.push(`${origin}: ${originResult.error}`);
+      continue;
+    }
+
+    attemptedFetch = true;
+
+    try {
+      const value = await fetchSenderJson<T>({ ...payload, from: origin }, originResult, endpoint);
+      return { origin, value };
+    } catch (err) {
+      errors.push(`${origin}: ${getErrorMessage(err)}`);
+    }
+  }
+
+  throw new LanTransferOriginFetchError(
+    `Unable to reach sender. Tried ${origins.length} origin${origins.length === 1 ? "" : "s"}: ${errors.join("; ")}`,
+    attemptedFetch ? 502 : 400,
+  );
 }
 
 async function fetchSenderJson<T>(
@@ -315,4 +339,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function getErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : "LAN transfer request failed";
+}
+
+function getLanTransferFetchStatusCode(err: unknown): 400 | 502 {
+  return err instanceof LanTransferOriginFetchError ? err.statusCode : 502;
+}
+
+class LanTransferOriginFetchError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: 400 | 502,
+  ) {
+    super(message);
+  }
 }
