@@ -44,7 +44,7 @@ export interface LanTransferPackage {
   manifest: LanTransferManifest;
   items: Array<
     | { type: "chat"; id: string; name: string; format: "jsonl"; content: string }
-    | { type: "chat"; id: string; name: string; format: "native"; chat: unknown; content?: any }
+    | { type: "chat"; id: string; name: string; format: "native"; chat: unknown }
     | { type: "character"; id: string; name: string; format: "native"; envelope: unknown }
   >;
 }

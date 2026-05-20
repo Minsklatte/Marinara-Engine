@@ -181,7 +181,7 @@ export async function importLanTransferPackage(
 
   for (const item of pkg.items) {
     try {
-      if (item.type === "chat") {
+      if (item.type === "chat" && item.format === "jsonl") {
         const result = await importSTChat(item.content, app.db, { chatName: item.name });
         if ("success" in result && result.success) {
           summary.imported.chats += 1;
