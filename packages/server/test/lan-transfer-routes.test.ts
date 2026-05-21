@@ -286,6 +286,102 @@ test("download consumes an offer once after token verification", async () =>
     assert.equal(second.statusCode, 404, second.body);
   }));
 
+test("sender offer status tracks preview and download lifecycle", async () =>
+  withLanTransferApp({ LAN_TRANSFER_ENABLED: "1" }, async (app) => {
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.create({ name: "Status smoke", mode: "roleplay", characterIds: [] });
+    assert.ok(chat?.id);
+
+    const create = await app.inject({
+      method: "POST",
+      url: "/api/lan-transfer/offers",
+      payload: { items: [{ type: "chat", id: chat.id }] },
+    });
+    assert.equal(create.statusCode, 200, create.body);
+    const created = JSON.parse(create.body) as { offerId: string; expiresAt: string; transferPayload: string };
+    const payload = parseLanTransferPayload(created.transferPayload);
+    assert.notEqual(payload, null);
+
+    const waiting = await app.inject({
+      method: "GET",
+      url: `/api/lan-transfer/offers/${created.offerId}/status`,
+    });
+    assert.equal(waiting.statusCode, 200, waiting.body);
+    assert.deepEqual(JSON.parse(waiting.body), {
+      offerId: created.offerId,
+      expiresAt: created.expiresAt,
+      state: "waiting",
+    });
+
+    const manifest = await app.inject({
+      method: "POST",
+      url: `/api/lan-transfer/offers/${created.offerId}/manifest`,
+      payload: { downloadToken: payload?.downloadToken },
+    });
+    assert.equal(manifest.statusCode, 200, manifest.body);
+
+    const previewed = await app.inject({
+      method: "GET",
+      url: `/api/lan-transfer/offers/${created.offerId}/status`,
+    });
+    assert.equal(previewed.statusCode, 200, previewed.body);
+    const previewedBody = JSON.parse(previewed.body) as { state: string; previewedAt?: unknown };
+    assert.equal(previewedBody.state, "previewed");
+    assert.equal(typeof previewedBody.previewedAt, "string");
+
+    const download = await app.inject({
+      method: "POST",
+      url: `/api/lan-transfer/offers/${created.offerId}/download`,
+      payload: { downloadToken: payload?.downloadToken },
+    });
+    assert.equal(download.statusCode, 200, download.body);
+
+    const downloaded = await app.inject({
+      method: "GET",
+      url: `/api/lan-transfer/offers/${created.offerId}/status`,
+    });
+    assert.equal(downloaded.statusCode, 200, downloaded.body);
+    const downloadedBody = JSON.parse(downloaded.body) as {
+      state: string;
+      previewedAt?: unknown;
+      downloadedAt?: unknown;
+    };
+    assert.equal(downloadedBody.state, "downloaded");
+    assert.equal(typeof downloadedBody.previewedAt, "string");
+    assert.equal(typeof downloadedBody.downloadedAt, "string");
+
+    const downloadAgain = await app.inject({
+      method: "POST",
+      url: `/api/lan-transfer/offers/${created.offerId}/download`,
+      payload: { downloadToken: payload?.downloadToken },
+    });
+    assert.equal(downloadAgain.statusCode, 404, downloadAgain.body);
+
+    const manifestAfterDownload = await app.inject({
+      method: "POST",
+      url: `/api/lan-transfer/offers/${created.offerId}/manifest`,
+      payload: { downloadToken: payload?.downloadToken },
+    });
+    assert.equal(manifestAfterDownload.statusCode, 404, manifestAfterDownload.body);
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/api/lan-transfer/offers/${created.offerId}`,
+    });
+    assert.equal(deleted.statusCode, 200, deleted.body);
+
+    const missing = await app.inject({
+      method: "GET",
+      url: `/api/lan-transfer/offers/${created.offerId}/status`,
+    });
+    assert.equal(missing.statusCode, 200, missing.body);
+    assert.deepEqual(JSON.parse(missing.body), {
+      offerId: created.offerId,
+      expiresAt: new Date(0).toISOString(),
+      state: "missing",
+    });
+  }));
+
 test("Basic Auth lets token-gated LAN manifest and download requests reach route validation", async () =>
   withLanTransferApp(
     {

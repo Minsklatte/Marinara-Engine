@@ -120,6 +120,14 @@ export interface LanTransferCreateOfferResponse {
   manifest: LanTransferManifest;
 }
 
+export interface LanTransferOfferStatusResponse {
+  offerId: string;
+  expiresAt: string;
+  state: "waiting" | "previewed" | "downloaded" | "missing";
+  previewedAt?: string;
+  downloadedAt?: string;
+}
+
 export interface LanTransferManifestRequest {
   downloadToken: string;
 }

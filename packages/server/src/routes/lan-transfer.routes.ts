@@ -6,6 +6,7 @@ import type {
   LanTransferItemRequest,
   LanTransferManifest,
   LanTransferManifestRequest,
+  LanTransferOfferStatusResponse,
   LanTransferPayload,
 } from "@marinara-engine/shared";
 import { LAN_TRANSFER_TYPE, LAN_TRANSFER_VERSION } from "@marinara-engine/shared";
@@ -109,6 +110,8 @@ export async function lanTransferRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "Invalid LAN transfer token" });
     }
 
+    lanTransferOfferStore.markPreviewed(request.params.offerId);
+
     return reply.send({
       offerId: offer.offerId,
       expiresAt: offer.manifest.expiresAt,
@@ -127,10 +130,31 @@ export async function lanTransferRoutes(app: FastifyInstance) {
       return reply.code(403).send({ error: "Invalid LAN transfer token" });
     }
 
+    lanTransferOfferStore.markDownloaded(request.params.offerId);
     const consumedOffer = lanTransferOfferStore.consume(request.params.offerId);
     if (!consumedOffer) return reply.code(404).send({ error: "LAN transfer offer not found" });
 
     return reply.send(consumedOffer.encryptedPackage);
+  });
+
+  app.get<{ Params: { offerId: string } }>("/offers/:offerId/status", async (request, reply) => {
+    const offer = lanTransferOfferStore.getStatus(request.params.offerId);
+    if (!offer) {
+      return reply.send({
+        offerId: request.params.offerId,
+        expiresAt: new Date(0).toISOString(),
+        state: "missing",
+      } satisfies LanTransferOfferStatusResponse);
+    }
+
+    const state = offer.downloadedAtMs ? "downloaded" : offer.previewedAtMs ? "previewed" : "waiting";
+    return reply.send({
+      offerId: offer.offerId,
+      expiresAt: offer.manifest.expiresAt,
+      state,
+      ...(offer.previewedAtMs ? { previewedAt: new Date(offer.previewedAtMs).toISOString() } : {}),
+      ...(offer.downloadedAtMs ? { downloadedAt: new Date(offer.downloadedAtMs).toISOString() } : {}),
+    } satisfies LanTransferOfferStatusResponse);
   });
 
   app.delete<{ Params: { offerId: string } }>("/offers/:offerId", async (request) => {
