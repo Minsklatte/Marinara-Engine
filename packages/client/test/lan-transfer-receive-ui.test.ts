@@ -39,6 +39,16 @@ const appendChat: LanTransferPreviewAction = {
   reason: "Existing synced chat is missing 3 newer messages",
 };
 
+const missingMappingSkipChat: LanTransferPreviewAction = {
+  ...skipChat,
+  reason: "Missing character mapping for char-1",
+};
+
+const localAheadSkipChat: LanTransferPreviewAction = {
+  ...skipChat,
+  reason: "Existing synced chat already has newer local messages",
+};
+
 function preview(actions: LanTransferPreviewAction[]): LanTransferPreviewResponse {
   return {
     from: "http://192.168.1.230:7860",
@@ -93,22 +103,62 @@ test("append action is not a no-op", () => {
   assert.equal(getImportButtonLabel(preview([reuseCard, appendChat]), false), "Import");
 });
 
+test("missing mapping chat skip is not an up-to-date no-op", () => {
+  const rows = buildLanTransferPreviewRows(preview([reuseCard, missingMappingSkipChat]), false);
+
+  assert.equal(isLanTransferPreviewNoOp(preview([reuseCard, missingMappingSkipChat]), false), false);
+  assert.equal(getImportButtonLabel(preview([reuseCard, missingMappingSkipChat]), false), "Import");
+  assert.deepEqual(
+    rows[0]?.actions.map((chip) => chip.label),
+    ["Using existing card", "Will skip"],
+  );
+  assert.deepEqual(
+    rows[0]?.actions.map((chip) => chip.tone),
+    ["success", "warning"],
+  );
+});
+
+test("local-ahead chat skip is treated as already up to date", () => {
+  const rows = buildLanTransferPreviewRows(preview([reuseCard, localAheadSkipChat]), false);
+
+  assert.equal(isLanTransferPreviewNoOp(preview([reuseCard, localAheadSkipChat]), false), true);
+  assert.deepEqual(
+    rows[0]?.actions.map((chip) => chip.label),
+    ["Using existing card", "Already up to date"],
+  );
+});
+
 test("preview rows group card and linked chat under one character without linked-to copy", () => {
   const rows = buildLanTransferPreviewRows(preview([reuseCard, appendChat]), false);
 
   assert.equal(rows.length, 1);
   assert.equal(rows[0]?.title, "Alicia");
-  assert.deepEqual(rows[0]?.chips.map((chip) => chip.label), ["1 card", "1 chat"]);
-  assert.deepEqual(rows[0]?.chips.map((chip) => chip.tone), ["card", "chat"]);
-  assert.deepEqual(rows[0]?.actions.map((chip) => chip.label), ["Using existing card", "Will add 3 messages"]);
-  assert.equal(rows[0]?.actions.some((chip) => chip.label.includes("linked to")), false);
+  assert.deepEqual(
+    rows[0]?.chips.map((chip) => chip.label),
+    ["1 card", "1 chat"],
+  );
+  assert.deepEqual(
+    rows[0]?.chips.map((chip) => chip.tone),
+    ["card", "chat"],
+  );
+  assert.deepEqual(
+    rows[0]?.actions.map((chip) => chip.label),
+    ["Using existing card", "Will add 3 messages"],
+  );
+  assert.equal(
+    rows[0]?.actions.some((chip) => chip.label.includes("linked to")),
+    false,
+  );
 });
 
 test("copy-mode grouped rows show one copy action chip", () => {
   const rows = buildLanTransferPreviewRows(preview([reuseCard, skipChat]), true);
 
   assert.equal(rows.length, 1);
-  assert.deepEqual(rows[0]?.actions.map((chip) => chip.label), ["Will import a copy"]);
+  assert.deepEqual(
+    rows[0]?.actions.map((chip) => chip.label),
+    ["Will import a copy"],
+  );
 });
 
 test("empty smart import toast is neutral info and does not claim an import happened", () => {

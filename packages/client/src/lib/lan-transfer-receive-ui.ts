@@ -61,7 +61,16 @@ function getRowTitle(item: PreviewManifestItem, action: LanTransferPreviewAction
   return getLinkedCharacterTitle(action) ?? item.name;
 }
 
-function getActionChip(action: LanTransferPreviewAction | undefined, importAsCopies: boolean): LanTransferPreviewChip | null {
+function isUpToDateSkipAction(action: LanTransferPreviewAction) {
+  if (action.type !== "chat" || action.action !== "skip") return false;
+  const reason = action.reason.toLowerCase();
+  return reason.includes("already up to date") || reason.includes("newer local messages");
+}
+
+function getActionChip(
+  action: LanTransferPreviewAction | undefined,
+  importAsCopies: boolean,
+): LanTransferPreviewChip | null {
   if (!action) return null;
 
   if (importAsCopies) return { label: "Will import a copy", tone: "copy" };
@@ -72,7 +81,11 @@ function getActionChip(action: LanTransferPreviewAction | undefined, importAsCop
       : { label: "Will import card", tone: "card" };
   }
 
-  if (action.action === "skip") return { label: "Already up to date", tone: "neutral" };
+  if (action.action === "skip") {
+    return isUpToDateSkipAction(action)
+      ? { label: "Already up to date", tone: "neutral" }
+      : { label: "Will skip", tone: "warning" };
+  }
   if (action.action === "append") {
     return { label: `Will add ${pluralize(action.appendCount ?? 0, "message")}`, tone: "update" };
   }
@@ -126,15 +139,12 @@ export function buildLanTransferPreviewRows(
   return rows.map(toPreviewRow);
 }
 
-export function isLanTransferPreviewNoOp(
-  preview: LanTransferPreviewResponse | null,
-  importAsCopies: boolean,
-): boolean {
+export function isLanTransferPreviewNoOp(preview: LanTransferPreviewResponse | null, importAsCopies: boolean): boolean {
   if (importAsCopies || !preview?.analysis || preview.analysis.actions.length === 0) return false;
 
   return preview.analysis.actions.every((action) => {
     if (action.type === "character") return action.action === "reuse";
-    return action.action === "skip";
+    return isUpToDateSkipAction(action);
   });
 }
 
@@ -182,7 +192,11 @@ export function getLanTransferImportToast(summary: LanTransferImportSummary): La
   const appendedChats = summary.appended?.chats ?? 0;
   const appendedMessages = summary.appended?.messages ?? 0;
   const changed =
-    importedParts.length > 0 || copiedParts.length > 0 || appendedChats > 0 || appendedMessages > 0 || summary.skipped.length > 0;
+    importedParts.length > 0 ||
+    copiedParts.length > 0 ||
+    appendedChats > 0 ||
+    appendedMessages > 0 ||
+    summary.skipped.length > 0;
 
   if (!changed) {
     return {

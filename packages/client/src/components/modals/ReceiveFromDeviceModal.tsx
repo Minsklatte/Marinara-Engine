@@ -2,12 +2,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Eye, Loader2, TriangleAlert, Wifi } from "lucide-react";
 import { toast } from "sonner";
-import type {
-  LanTransferImportSummary,
-  LanTransferPreviewAction,
-  LanTransferPreviewResponse,
-} from "@marinara-engine/shared";
+import type { LanTransferPreviewAction, LanTransferPreviewResponse } from "@marinara-engine/shared";
 import { useImportLanTransferFromOffer, usePreviewLanTransfer } from "../../hooks/use-lan-transfer";
+import {
+  buildLanTransferPreviewRows,
+  getImportButtonLabel,
+  getLanTransferImportToast,
+  isLanTransferPreviewNoOp,
+  type LanTransferChipTone,
+} from "../../lib/lan-transfer-receive-ui";
 import { Modal } from "../ui/Modal";
 
 interface ReceiveFromDeviceModalProps {
@@ -24,13 +27,6 @@ function getErrorMessage(error: unknown, fallback: string) {
 }
 
 type PreviewManifestItem = LanTransferPreviewResponse["manifest"]["items"][number];
-
-interface PreviewDisplayRow {
-  key: string;
-  title: string;
-  chips: string[];
-  actions: LanTransferPreviewAction[];
-}
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -49,143 +45,25 @@ function getBundledCharacterCount(item: PreviewManifestItem) {
   return item.type === "chat" && item.format === "native" && item.characterCount > 0 ? item.characterCount : 0;
 }
 
-function getLinkedCharacterNames(item: PreviewManifestItem, action?: LanTransferPreviewAction) {
-  if (action?.type === "chat" && action.sourceId === item.id && action.linkedCharacterNames?.length) {
-    return action.linkedCharacterNames;
+function getChipClassName(tone: LanTransferChipTone) {
+  const base = "max-w-full truncate rounded-md border px-2 py-1 text-xs font-semibold sm:max-w-72";
+
+  switch (tone) {
+    case "card":
+      return `${base} border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-200`;
+    case "chat":
+      return `${base} border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-200`;
+    case "success":
+      return `${base} border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200`;
+    case "update":
+      return `${base} border-amber-500/35 bg-amber-500/15 text-amber-800 dark:text-amber-200`;
+    case "warning":
+      return `${base} border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-200`;
+    case "copy":
+      return `${base} border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-200`;
+    case "neutral":
+      return `${base} border-slate-400/35 bg-slate-500/10 text-slate-700 dark:text-slate-200`;
   }
-
-  return undefined;
-}
-
-function getActionLabel(action?: LanTransferPreviewAction) {
-  if (!action) return null;
-
-  if (action.type === "character") {
-    return action.action === "reuse" ? "Using existing card" : "Will import card";
-  }
-
-  if (action.action === "skip") return "Already up to date";
-  if (action.action === "append") return `Will add ${pluralize(action.appendCount ?? 0, "message")}`;
-  if (action.action === "conflict-copy") return "History differs; will import a copy";
-  return "Will import a copy";
-}
-
-function getVisibleActionLabel(importAsCopies: boolean, action?: LanTransferPreviewAction) {
-  if (importAsCopies) return "Will import a copy";
-  return getActionLabel(action);
-}
-
-function getActionKey(action: LanTransferPreviewAction) {
-  return `${action.type}:${action.sourceId}`;
-}
-
-function getPrimaryLinkedCharacterName(item: PreviewManifestItem, action?: LanTransferPreviewAction) {
-  const names = getLinkedCharacterNames(item, action);
-  return names?.length === 1 ? names[0] : null;
-}
-
-function getStandaloneItemChip(item: PreviewManifestItem) {
-  return item.type === "character" ? "1 card" : "1 chat";
-}
-
-function summarizePreviewChips(chips: string[]) {
-  const chatCount = chips.filter((chip) => chip === "1 chat").length;
-  const cardCount = chips.filter((chip) => chip === "1 card").length;
-  const otherChips = chips.filter((chip) => chip !== "1 chat" && chip !== "1 card");
-  const summarized: string[] = [];
-
-  if (cardCount > 0) summarized.push(pluralize(cardCount, "card"));
-  if (chatCount > 0) summarized.push(pluralize(chatCount, "chat"));
-  summarized.push(...otherChips);
-  return summarized;
-}
-
-function buildPreviewRows(
-  items: PreviewManifestItem[],
-  actionByItemKey: Map<string, LanTransferPreviewAction>,
-): PreviewDisplayRow[] {
-  const rows: PreviewDisplayRow[] = [];
-  const groupedByCharacter = new Map<string, PreviewDisplayRow>();
-
-  for (const item of items) {
-    const action = actionByItemKey.get(`${item.type}:${item.id}`);
-    const linkedName = item.type === "chat" ? getPrimaryLinkedCharacterName(item, action) : null;
-    const title = item.type === "character" ? item.name : linkedName;
-
-    if (title) {
-      const existing = groupedByCharacter.get(title);
-      if (existing) {
-        existing.chips.push(getStandaloneItemChip(item));
-        if (action) existing.actions.push(action);
-        continue;
-      }
-
-      const row: PreviewDisplayRow = {
-        key: `group:${title}:${item.id}`,
-        title,
-        chips: [getStandaloneItemChip(item)],
-        actions: action ? [action] : [],
-      };
-      groupedByCharacter.set(title, row);
-      rows.push(row);
-      continue;
-    }
-
-    rows.push({
-      key: `${item.type}:${item.id}`,
-      title: item.name,
-      chips: [getStandaloneItemChip(item)],
-      actions: action ? [action] : [],
-    });
-  }
-
-  return rows.map((row) => ({
-    ...row,
-    chips: summarizePreviewChips(row.chips),
-  }));
-}
-
-function pushCountPart(parts: string[], count: number | undefined, singular: string, plural?: string) {
-  if (typeof count === "number" && count > 0) parts.push(pluralize(count, singular, plural));
-}
-
-function joinCountParts(parts: string[]) {
-  if (parts.length <= 1) return parts.join("");
-  return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
-}
-
-function getImportSummary(summary: LanTransferImportSummary) {
-  const sentences: string[] = [];
-  const importedParts: string[] = [];
-  const existingParts: string[] = [];
-  const copiedParts: string[] = [];
-  const copiedChats = summary.copied?.chats ?? 0;
-  const copiedCharacters = summary.copied?.characters ?? 0;
-  const importedChats = Math.max(0, summary.imported.chats - copiedChats);
-  const importedCharacters = Math.max(0, summary.imported.characters - copiedCharacters);
-
-  pushCountPart(importedParts, importedChats, "chat");
-  pushCountPart(importedParts, importedCharacters, "card");
-  pushCountPart(existingParts, summary.reused?.chats, "chat");
-  pushCountPart(existingParts, summary.reused?.characters, "card");
-  pushCountPart(copiedParts, summary.copied?.chats, "chat");
-  pushCountPart(copiedParts, summary.copied?.characters, "card");
-
-  if (summary.appended && summary.appended.messages > 0) {
-    sentences.push(
-      `Added ${pluralize(summary.appended.messages, "message")} to ${pluralize(summary.appended.chats, "chat")}`,
-    );
-  }
-
-  if (importedParts.length > 0) sentences.push(`Imported ${joinCountParts(importedParts)}`);
-  if (existingParts.length > 0) sentences.push(`Used ${joinCountParts(existingParts)} already on this device`);
-  if (copiedParts.length > 0) {
-    sentences.push(`Imported ${joinCountParts(copiedParts)} as ${copiedParts.length === 1 ? "a copy" : "copies"}`);
-  }
-  if (sentences.length === 0 && summary.skipped.length === 0) sentences.push("Everything was already up to date");
-  if (summary.skipped.length > 0) sentences.push(`Skipped ${summary.skipped.length}`);
-
-  return `${sentences.join("; ")}.`;
 }
 
 function normalizePreviewAction(value: unknown): LanTransferPreviewAction | null {
@@ -352,11 +230,15 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
   const isImporting = importTransfer.isPending;
   const isBusy = previewTransfer.isPending || isImporting;
   const canPreview = trimmedPayload.length > 0 && !isBusy;
-  const canImport = trimmedPayload.length > 0 && previewedPayload === trimmedPayload && !isBusy;
+  const isPreviewNoOp = isLanTransferPreviewNoOp(preview, importAsCopies);
+  const canImport = trimmedPayload.length > 0 && previewedPayload === trimmedPayload && !isBusy && !isPreviewNoOp;
+  const importButtonLabel = getImportButtonLabel(preview, importAsCopies);
   const itemCount = preview?.manifest.items.length ?? 0;
   const errorMessage =
     localError ??
-    (previewTransfer.error ? getErrorMessage(previewTransfer.error, "Could not preview this transfer payload.") : null) ??
+    (previewTransfer.error
+      ? getErrorMessage(previewTransfer.error, "Could not preview this transfer payload.")
+      : null) ??
     (importTransfer.error ? getErrorMessage(importTransfer.error, "Could not import this transfer payload.") : null);
 
   useEffect(() => {
@@ -460,8 +342,16 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
         transferPayload: payload,
         options: { importMode: importAsCopies ? "copy" : "smart" },
       });
-      toast.success(getImportSummary(summary));
-      onClose();
+      const importToast = getLanTransferImportToast(summary);
+      if (importToast.kind === "info") toast.info(importToast.message);
+      if (importToast.kind === "warning") toast.warning(importToast.message);
+      if (importToast.kind === "success") toast.success(importToast.message);
+      if (importToast.closeModal) {
+        onClose();
+      } else {
+        setPreviewedPayload(null);
+        setStatusMessage("Nothing changed. This transfer was already up to date.");
+      }
     } catch {
       setStatusMessage(null);
     }
@@ -472,16 +362,10 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
     onClose();
   }, [importTransfer.isPending, onClose]);
 
-  const actionByItemKey = useMemo(() => {
-    const actions = preview?.analysis?.actions;
-    if (!actions) return new Map<string, LanTransferPreviewAction>();
-    return new Map(actions.map((action) => [getActionKey(action), action]));
-  }, [preview?.analysis?.actions]);
-
   const previewRows = useMemo(() => {
     if (!preview) return [];
-    return buildPreviewRows(preview.manifest.items, actionByItemKey);
-  }, [actionByItemKey, preview]);
+    return buildLanTransferPreviewRows(preview, importAsCopies);
+  }, [importAsCopies, preview]);
 
   return (
     <Modal open={open} onClose={handleClose} title="Receive from Device" width="max-w-2xl">
@@ -560,47 +444,38 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
             </div>
 
             <div className="max-h-64 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--background)]">
-              {previewRows.map((row) => {
-                const actionLabels = Array.from(
-                  new Set(
-                    row.actions
-                      .map((action) => getVisibleActionLabel(importAsCopies, action))
-                      .filter((label): label is string => Boolean(label)),
-                  ),
-                );
-
-                return (
-                  <div
-                    key={row.key}
-                    className="flex items-center justify-between gap-3 border-b border-[var(--border)]/60 px-3 py-2 last:border-b-0 max-sm:flex-col max-sm:items-start"
-                  >
-                    <span className="min-w-0 truncate text-sm font-medium text-[var(--foreground)]" title={row.title}>
-                      {row.title}
-                    </span>
-                    <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start sm:max-w-[70%]">
-                      {row.chips.map((chip) => (
-                        <span
-                          key={chip}
-                          title={chip}
-                          className="max-w-full truncate rounded-md bg-[var(--muted)] px-2 py-1 text-xs font-semibold text-[var(--muted-foreground)] sm:max-w-72"
-                        >
-                          {chip}
-                        </span>
-                      ))}
-                      {actionLabels.map((label) => (
-                        <span
-                          key={label}
-                          title={label}
-                          className="max-w-full truncate rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 px-2 py-1 text-xs font-semibold text-[var(--foreground)] sm:max-w-72"
-                        >
-                          {label}
-                        </span>
-                      ))}
-                    </div>
+              {previewRows.map((row) => (
+                <div
+                  key={row.key}
+                  className="flex items-center justify-between gap-3 border-b border-[var(--border)]/60 px-3 py-2 last:border-b-0 max-sm:flex-col max-sm:items-start"
+                >
+                  <span className="min-w-0 truncate text-sm font-medium text-[var(--foreground)]" title={row.title}>
+                    {row.title}
+                  </span>
+                  <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 max-sm:w-full max-sm:justify-start sm:max-w-[70%]">
+                    {[...row.chips, ...row.actions].map((chip) => (
+                      <span
+                        key={`${chip.tone}:${chip.label}`}
+                        title={chip.label}
+                        className={getChipClassName(chip.tone)}
+                      >
+                        {chip.label}
+                      </span>
+                    ))}
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
+
+            {isPreviewNoOp && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="rounded-lg border border-slate-400/35 bg-slate-500/10 p-3 text-sm text-[var(--muted-foreground)]"
+              >
+                Nothing to import. This device already has the selected cards and chats up to date.
+              </div>
+            )}
           </div>
         )}
 
@@ -632,7 +507,7 @@ export function ReceiveFromDeviceModal({ open, onClose }: ReceiveFromDeviceModal
               className="inline-flex items-center gap-2 rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {importTransfer.isPending ? <Loader2 className="animate-spin" size="1rem" /> : <Download size="1rem" />}
-              Import
+              {importButtonLabel}
             </button>
           </div>
         </div>
