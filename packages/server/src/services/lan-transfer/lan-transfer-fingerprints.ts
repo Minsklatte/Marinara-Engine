@@ -26,6 +26,10 @@ export function fingerprintNativeCharacterEnvelope(envelope: unknown): string {
   return sha256Base64Url(stableStringify(stripVolatileCharacterEnvelopeFields(envelope)));
 }
 
+export function fingerprintComparableNativeCharacterEnvelope(envelope: unknown): string {
+  return sha256Base64Url(stableStringify(stripLocalCharacterEnvelopeMetadata(envelope)));
+}
+
 export function fingerprintLanTransferMessage(message: LanTransferMessageFingerprintInput): string {
   return sha256Base64Url(
     stableStringify({
@@ -100,6 +104,18 @@ function stripVolatileCharacterEnvelopeFields(value: unknown): unknown {
       }
     }
   }
+  return cloned;
+}
+
+function stripLocalCharacterEnvelopeMetadata(value: unknown): unknown {
+  const cloned = stripVolatileCharacterEnvelopeFields(value);
+  if (!isRecord(cloned)) return cloned;
+  const outerData = cloned.data;
+  if (!isRecord(outerData)) return cloned;
+  const metadata = outerData.metadata;
+  if (!isRecord(metadata)) return cloned;
+  delete metadata.createdAt;
+  delete metadata.updatedAt;
   return cloned;
 }
 

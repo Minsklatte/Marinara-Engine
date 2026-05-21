@@ -120,6 +120,41 @@ test("character fingerprint includes real generic LAN transfer extension content
   assert.notEqual(fingerprintNativeCharacterEnvelope(base), fingerprintNativeCharacterEnvelope(changed));
 });
 
+test("comparable character fingerprint ignores local export metadata", async () => {
+  const { fingerprintComparableNativeCharacterEnvelope, fingerprintNativeCharacterEnvelope } = await import(
+    "../src/services/lan-transfer/lan-transfer-fingerprints.js"
+  );
+
+  const first = {
+    type: "marinara_character",
+    version: 1,
+    data: {
+      spec: "chara_card_v2",
+      spec_version: "2.0",
+      data: { name: "Alicia", description: "same" },
+      metadata: {
+        createdAt: "2026-05-20T00:00:00.000Z",
+        updatedAt: "2026-05-20T00:00:00.000Z",
+        comment: "",
+      },
+    },
+  };
+  const second = {
+    ...first,
+    data: {
+      ...first.data,
+      metadata: {
+        ...first.data.metadata,
+        createdAt: "2026-05-21T00:00:00.000Z",
+        updatedAt: "2026-05-21T00:00:00.000Z",
+      },
+    },
+  };
+
+  assert.notEqual(fingerprintNativeCharacterEnvelope(first), fingerprintNativeCharacterEnvelope(second));
+  assert.equal(fingerprintComparableNativeCharacterEnvelope(first), fingerprintComparableNativeCharacterEnvelope(second));
+});
+
 test("readLanTransferSyncId reads namespaced character extension sync metadata", async () => {
   const { readLanTransferSyncId } = await import("../src/services/lan-transfer/lan-transfer-fingerprints.js");
 

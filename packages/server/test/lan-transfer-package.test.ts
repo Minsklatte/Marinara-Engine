@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileNativeDB } from "../src/db/file-backed-store.js";
 import {
+  fingerprintComparableNativeCharacterEnvelope,
   fingerprintLanTransferMessage,
   fingerprintLanTransferMessageSequence,
   fingerprintNativeCharacterEnvelope,
@@ -94,9 +95,10 @@ function buildNativeCharacterFixture() {
     },
   };
   const fingerprint = fingerprintNativeCharacterEnvelope(baseEnvelope);
+  const comparisonFingerprint = fingerprintComparableNativeCharacterEnvelope(baseEnvelope);
   const envelope = withLanTransferCharacterSyncMetadata(baseEnvelope, { syncId: "char-1", fingerprint });
   const bytes = Buffer.byteLength(JSON.stringify(envelope), "utf8");
-  return { envelope, fingerprint, bytes };
+  return { envelope, fingerprint, comparisonFingerprint, bytes };
 }
 
 async function withDb<T>(fn: (db: Awaited<ReturnType<typeof createFileNativeDB>>) => Promise<T>) {
@@ -241,6 +243,7 @@ test("native package export writes stable sync IDs and manifest fingerprints", a
     assert.equal(characterItem.id, "sync-character-ari");
     assert.equal(characterItem.syncId, "sync-character-ari");
     assert.equal(typeof characterItem.fingerprint, "string");
+    assert.equal(typeof characterItem.comparisonFingerprint, "string");
     assert.equal(characterItem.envelope.data.data.extensions.marinara_lan_transfer.syncId, "sync-character-ari");
     assert.equal(
       characterItem.envelope.data.data.extensions.marinara_lan_transfer.fingerprint,
@@ -253,6 +256,7 @@ test("native package export writes stable sync IDs and manifest fingerprints", a
       name: "Ari",
       format: "native",
       fingerprint: characterItem.fingerprint,
+      comparisonFingerprint: characterItem.comparisonFingerprint,
       bytes: Buffer.byteLength(JSON.stringify(characterItem.envelope), "utf8"),
     });
     assert.equal(chatItem.type, "chat");
@@ -773,7 +777,7 @@ test("rejects malformed character envelope", () => {
 });
 
 test("accepts a valid native character envelope", () => {
-  const { envelope, fingerprint, bytes } = buildNativeCharacterFixture();
+  const { envelope, fingerprint, comparisonFingerprint, bytes } = buildNativeCharacterFixture();
   const result = validateLanTransferPackage(
     {
       version: 1,
@@ -791,6 +795,7 @@ test("accepts a valid native character envelope", () => {
             name: "Character",
             format: "native",
             fingerprint,
+            comparisonFingerprint,
             bytes,
           },
         ],
@@ -804,6 +809,7 @@ test("accepts a valid native character envelope", () => {
           name: "Character",
           format: "native",
           fingerprint,
+          comparisonFingerprint,
           envelope,
         },
       ],
@@ -869,7 +875,7 @@ test("accepts and imports legacy native character packages without smart metadat
   }));
 
 test("rejects forged native character sync metadata", () => {
-  const { envelope, fingerprint, bytes } = buildNativeCharacterFixture();
+  const { envelope, fingerprint, comparisonFingerprint, bytes } = buildNativeCharacterFixture();
   const basePackage = {
     version: 1,
     manifest: {
@@ -886,6 +892,7 @@ test("rejects forged native character sync metadata", () => {
           name: "Character",
           format: "native",
           fingerprint,
+          comparisonFingerprint,
           bytes,
         },
       ],
@@ -899,6 +906,7 @@ test("rejects forged native character sync metadata", () => {
         name: "Character",
         format: "native",
         fingerprint,
+        comparisonFingerprint,
         envelope,
       },
     ],
@@ -931,6 +939,20 @@ test("rejects forged native character sync metadata", () => {
       { now: () => NOW },
     ),
     { ok: false, error: "Character fingerprint mismatch" },
+  );
+  assert.deepEqual(
+    validateLanTransferPackage(
+      {
+        ...basePackage,
+        manifest: {
+          ...basePackage.manifest,
+          items: [{ ...basePackage.manifest.items[0], comparisonFingerprint: "forged" }],
+        },
+        items: [{ ...basePackage.items[0], comparisonFingerprint: "forged" }],
+      },
+      { now: () => NOW },
+    ),
+    { ok: false, error: "Character comparison fingerprint mismatch" },
   );
 });
 

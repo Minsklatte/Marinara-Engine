@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileNativeDB } from "../src/db/file-backed-store.js";
-import { chats as chatsTable } from "../src/db/schema/index.js";
+import { characters as charactersTable, chats as chatsTable } from "../src/db/schema/index.js";
 import { fingerprintLanTransferMessage } from "../src/services/lan-transfer/lan-transfer-fingerprints.js";
 import { buildLanTransferPackage, importLanTransferPackage } from "../src/services/lan-transfer/lan-transfer-package.js";
 import { analyzeLanTransferManifest } from "../src/services/lan-transfer/lan-transfer-smart-import.js";
@@ -31,13 +31,17 @@ async function withDb<T>(fn: (db: Awaited<ReturnType<typeof createFileNativeDB>>
   }
 }
 
-test("omitted import mode reuses an exact matching character instead of duplicating it", async () =>
+test("omitted import mode reuses a matching character with different local metadata", async () =>
   withDb(async (db) => {
     const characters = createCharactersStorage(db);
     const existing = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
     assert.ok(existing?.id);
     const source = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
     assert.ok(source?.id);
+    await db
+      .update(charactersTable)
+      .set({ createdAt: "2026-05-21T00:00:00.000Z", updatedAt: "2026-05-21T00:00:00.000Z" })
+      .where(eq(charactersTable.id, source.id));
 
     const pkg = await buildLanTransferPackage(
       { db } as any,
@@ -57,13 +61,17 @@ test("omitted import mode reuses an exact matching character instead of duplicat
     assert.equal(allCharacters.length, 1);
   }));
 
-test("smart import reuses an exact matching character instead of duplicating it", async () =>
+test("smart import reuses a matching character with different local metadata", async () =>
   withDb(async (db) => {
     const characters = createCharactersStorage(db);
     const existing = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
     assert.ok(existing?.id);
     const source = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
     assert.ok(source?.id);
+    await db
+      .update(charactersTable)
+      .set({ createdAt: "2026-05-21T00:00:00.000Z", updatedAt: "2026-05-21T00:00:00.000Z" })
+      .where(eq(charactersTable.id, source.id));
 
     const pkg = await buildLanTransferPackage(
       { db } as any,
@@ -81,6 +89,37 @@ test("smart import reuses an exact matching character instead of duplicating it"
     assert.equal(summary.characterIdMap?.[pkg.items[0]!.id], existing.id);
     const allCharacters = await characters.list();
     assert.equal(allCharacters.length, 1);
+  }));
+
+test("preview analysis shows existing card when import would reuse comparable character envelope", async () =>
+  withDb(async (db) => {
+    const characters = createCharactersStorage(db);
+    const existing = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(existing?.id);
+    const source = await characters.create({ name: "Alicia", description: "same", first_mes: "Hi" } as any);
+    assert.ok(source?.id);
+    await db
+      .update(charactersTable)
+      .set({ createdAt: "2026-05-21T00:00:00.000Z", updatedAt: "2026-05-21T00:00:00.000Z" })
+      .where(eq(charactersTable.id, source.id));
+
+    const pkg = await buildLanTransferPackage(
+      { db } as any,
+      [{ type: "character", id: source.id }],
+      "2999-01-01T00:00:00.000Z",
+    );
+    await characters.remove(source.id);
+
+    const analysis = await analyzeLanTransferManifest({ db } as any, pkg.manifest);
+
+    assert.deepEqual(analysis.actions[0], {
+      type: "character",
+      sourceId: pkg.manifest.items[0]!.id,
+      name: "Alicia",
+      action: "reuse",
+      targetId: existing.id,
+      reason: "Matching native character already exists",
+    });
   }));
 
 test("copy import still duplicates an exact matching character", async () =>

@@ -14,6 +14,7 @@ import {
   validateNativeLanChatExport,
 } from "./lan-transfer-native-chat.js";
 import {
+  fingerprintComparableNativeCharacterEnvelope,
   fingerprintLanTransferMessageSequence,
   fingerprintNativeCharacterEnvelope,
   readLanTransferSyncId,
@@ -72,6 +73,7 @@ export async function buildLanTransferPackage(
     const name = readName(data, id);
     const baseEnvelope = await buildNativeCharacterEnvelope(character, data, gallery);
     const fingerprint = fingerprintNativeCharacterEnvelope(baseEnvelope);
+    const comparisonFingerprint = fingerprintComparableNativeCharacterEnvelope(baseEnvelope);
     const syncId = readLanTransferSyncId(baseEnvelope) ?? id;
     if (addedSyncCharacterIds.has(syncId)) {
       addedLocalCharacterIds.add(id);
@@ -88,6 +90,7 @@ export async function buildLanTransferPackage(
       name,
       format: "native",
       fingerprint,
+      comparisonFingerprint,
       envelope,
     });
     manifestItems.push({
@@ -97,6 +100,7 @@ export async function buildLanTransferPackage(
       name,
       format: "native",
       fingerprint,
+      comparisonFingerprint,
       bytes,
     });
     addedLocalCharacterIds.add(id);
@@ -360,6 +364,9 @@ function validateManifestItem(item: unknown): { ok: true } | { ok: false; error:
     if (item.fingerprint !== undefined && !isNonEmptyString(item.fingerprint)) {
       return { ok: false, error: "Character manifest item fingerprint must be a non-empty string" };
     }
+    if (item.comparisonFingerprint !== undefined && !isNonEmptyString(item.comparisonFingerprint)) {
+      return { ok: false, error: "Character manifest item comparisonFingerprint must be a non-empty string" };
+    }
     return { ok: true };
   }
 
@@ -406,6 +413,9 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
     if (item.fingerprint !== undefined && !isNonEmptyString(item.fingerprint)) {
       return { ok: false, error: "Character package item fingerprint must be a non-empty string" };
     }
+    if (item.comparisonFingerprint !== undefined && !isNonEmptyString(item.comparisonFingerprint)) {
+      return { ok: false, error: "Character package item comparisonFingerprint must be a non-empty string" };
+    }
     if (!isNativeCharacterEnvelope(item.envelope)) {
       return { ok: false, error: "Character package item envelope must be a native character envelope" };
     }
@@ -414,6 +424,12 @@ function validatePackageItem(item: unknown): { ok: true } | { ok: false; error: 
     }
     if (item.fingerprint !== undefined && fingerprintNativeCharacterEnvelope(item.envelope) !== item.fingerprint) {
       return { ok: false, error: "Character fingerprint mismatch" };
+    }
+    if (
+      item.comparisonFingerprint !== undefined &&
+      fingerprintComparableNativeCharacterEnvelope(item.envelope) !== item.comparisonFingerprint
+    ) {
+      return { ok: false, error: "Character comparison fingerprint mismatch" };
     }
     return { ok: true };
   }
@@ -516,8 +532,20 @@ function validateManifestItemMatchesPackageItem(
     ) {
       return { ok: false, error: "Character sync metadata mismatch" };
     }
+    if (
+      (manifestItem.comparisonFingerprint !== undefined || packageItem.comparisonFingerprint !== undefined) &&
+      manifestItem.comparisonFingerprint !== packageItem.comparisonFingerprint
+    ) {
+      return { ok: false, error: "Character sync metadata mismatch" };
+    }
     if (manifestItem.fingerprint !== undefined && manifestItem.fingerprint !== fingerprintNativeCharacterEnvelope(packageItem.envelope)) {
       return { ok: false, error: "Character fingerprint mismatch" };
+    }
+    if (
+      manifestItem.comparisonFingerprint !== undefined &&
+      manifestItem.comparisonFingerprint !== fingerprintComparableNativeCharacterEnvelope(packageItem.envelope)
+    ) {
+      return { ok: false, error: "Character comparison fingerprint mismatch" };
     }
   }
 

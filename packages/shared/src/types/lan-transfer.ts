@@ -73,6 +73,7 @@ export interface LanTransferManifest {
         name: string;
         format: "native";
         fingerprint?: string;
+        comparisonFingerprint?: string;
         bytes: number;
       }
   >;
@@ -92,6 +93,7 @@ export interface LanTransferPackage {
         name: string;
         format: "native";
         fingerprint?: string;
+        comparisonFingerprint?: string;
         envelope: unknown;
       }
   >;

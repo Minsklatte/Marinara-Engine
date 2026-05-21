@@ -17,6 +17,7 @@ import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import {
   compareFingerprintSequences,
+  fingerprintComparableNativeCharacterEnvelope,
   fingerprintLanTransferMessage,
   fingerprintLanTransferMessageSequence,
   fingerprintNativeCharacterEnvelope,
@@ -42,6 +43,7 @@ interface PreviewCharacterItem {
   name: string;
   format: "native";
   fingerprint?: string;
+  comparisonFingerprint?: string;
 }
 
 interface PreviewJsonlChatItem {
@@ -95,7 +97,9 @@ export async function analyzeLanTransferManifest(
 
   for (const item of items) {
     if (item.type === "character" && item.format === "native") {
-      const existingId = await findExactCharacterByFingerprint(app, item.fingerprint);
+      const exactExistingId = await findExactCharacterByFingerprint(app, item.fingerprint);
+      const existingId =
+        exactExistingId ?? (await findComparableCharacterByFingerprint(app, item.comparisonFingerprint));
       if (existingId) {
         writePreviewCharacterIdMap(characterIdMap, item, existingId);
         actions.push({
@@ -104,7 +108,9 @@ export async function analyzeLanTransferManifest(
           name: item.name,
           action: "reuse",
           targetId: existingId,
-          reason: "Exact matching native character already exists",
+          reason: exactExistingId
+            ? "Exact matching native character already exists"
+            : "Matching native character already exists",
         });
       } else {
         actions.push({
@@ -390,9 +396,16 @@ async function findExactCharacterByComparableEnvelope(
   app: FastifyInstance,
   sourceEnvelope: unknown,
 ): Promise<string | null> {
-  const sourceFingerprint = fingerprintNativeCharacterEnvelope(
-    normalizeCharacterEnvelopeForLocalComparison(sourceEnvelope),
-  );
+  const sourceFingerprint = fingerprintComparableNativeCharacterEnvelope(sourceEnvelope);
+  return findComparableCharacterByFingerprint(app, sourceFingerprint);
+}
+
+async function findComparableCharacterByFingerprint(
+  app: FastifyInstance,
+  fingerprint: string | undefined,
+): Promise<string | null> {
+  if (!fingerprint) return null;
+
   const characters = createCharactersStorage(app.db);
   const gallery = createCharacterGalleryStorage(app.db);
   for (const character of await characters.list()) {
@@ -404,29 +417,9 @@ async function findExactCharacterByComparableEnvelope(
     }
 
     const envelope = await buildNativeCharacterEnvelope(character, data, gallery);
-    const localFingerprint = fingerprintNativeCharacterEnvelope(
-      normalizeCharacterEnvelopeForLocalComparison(envelope),
-    );
-    if (localFingerprint === sourceFingerprint) return character.id;
+    if (fingerprintComparableNativeCharacterEnvelope(envelope) === fingerprint) return character.id;
   }
   return null;
-}
-
-function normalizeCharacterEnvelopeForLocalComparison(value: unknown): unknown {
-  const cloned = cloneJsonCompatible(value);
-  if (!isRecord(cloned)) return cloned;
-  const outerData = cloned.data;
-  if (!isRecord(outerData)) return cloned;
-  const metadata = outerData.metadata;
-  if (!isRecord(metadata)) return cloned;
-  delete metadata.createdAt;
-  delete metadata.updatedAt;
-  return cloned;
-}
-
-function cloneJsonCompatible(value: unknown): unknown {
-  if (value === undefined) return undefined;
-  return JSON.parse(JSON.stringify(value)) as unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -524,6 +517,7 @@ function sanitizePreviewManifestItem(value: unknown): PreviewManifestItem | null
       name: readNonEmptyString(value.name) ?? "Untitled character",
       format: "native",
       fingerprint: readNonEmptyString(value.fingerprint),
+      comparisonFingerprint: readNonEmptyString(value.comparisonFingerprint),
     };
   }
 
