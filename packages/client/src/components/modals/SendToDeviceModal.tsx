@@ -1,6 +1,6 @@
 // Modal: Send chats and characters to another LAN device
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Clipboard, Loader2, QrCode, TriangleAlert, XCircle } from "lucide-react";
+import { CheckCircle2, Clipboard, Loader2, QrCode, Radio, TriangleAlert, XCircle } from "lucide-react";
 import QRCode from "qrcode";
 import { toast } from "sonner";
 import {
@@ -10,7 +10,11 @@ import {
   type LanTransferItemRequest,
   type LanTransferPayload,
 } from "@marinara-engine/shared";
-import { useCancelLanTransferOffer, useCreateLanTransferOffer } from "../../hooks/use-lan-transfer";
+import {
+  useCancelLanTransferOffer,
+  useCreateLanTransferOffer,
+  useLanTransferOfferStatus,
+} from "../../hooks/use-lan-transfer";
 import { Modal } from "../ui/Modal";
 
 interface SendToDeviceModalProps {
@@ -98,6 +102,42 @@ function parseLanTransferPayload(raw: string): LanTransferPayload | null {
   };
 }
 
+function getSenderStatusCopy(state: "waiting" | "previewed" | "downloaded" | "missing" | undefined) {
+  if (state === "previewed") {
+    return {
+      icon: Radio,
+      title: "Receiver connected",
+      body: "The receiving device opened the preview. Keep this window open until import finishes.",
+      className: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-200",
+    };
+  }
+
+  if (state === "downloaded") {
+    return {
+      icon: CheckCircle2,
+      title: "Transfer downloaded",
+      body: "The receiving device downloaded the package. It may take a moment to finish importing.",
+      className: "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-200",
+    };
+  }
+
+  if (state === "missing") {
+    return {
+      icon: XCircle,
+      title: "Offer no longer available",
+      body: "This transfer was cancelled, expired, or is no longer available.",
+      className: "border-[var(--destructive)]/40 bg-[var(--destructive)]/10 text-[var(--foreground)]",
+    };
+  }
+
+  return {
+    icon: Loader2,
+    title: "Waiting for receiver",
+    body: "On the other device, open Settings > Import > Receive from Device, then scan this code or paste the payload.",
+    className: "border-[var(--border)]/60 bg-[var(--muted)]/30 text-[var(--muted-foreground)]",
+  };
+}
+
 export function SendToDeviceModal({ open, onClose, items, title = "Send to Device" }: SendToDeviceModalProps) {
   const { mutateAsync: createOfferAsync, reset: resetCreateOffer } = useCreateLanTransferOffer();
   const { mutateAsync: cancelOfferAsync, reset: resetCancelOffer } = useCancelLanTransferOffer();
@@ -119,6 +159,10 @@ export function SendToDeviceModal({ open, onClose, items, title = "Send to Devic
     [offer?.transferPayload],
   );
   const senderOrigin = offerPayload?.origins?.[0] ?? offerPayload?.from ?? null;
+  const offerStatus = useLanTransferOfferStatus(offer?.offerId ?? null, open && !!offer);
+  const senderStatusCopy = getSenderStatusCopy(offerStatus.data?.state);
+  const SenderStatusIcon = senderStatusCopy.icon;
+  const shouldAnimateSenderStatusIcon = !offerStatus.data?.state || offerStatus.data.state === "waiting";
   const hasItems = items.length > 0;
 
   const cancelOfferById = useCallback(
@@ -276,8 +320,8 @@ export function SendToDeviceModal({ open, onClose, items, title = "Send to Devic
             <div className="min-w-0 space-y-1">
               <p className="text-sm font-semibold text-[var(--foreground)]">Preparing {itemSummary}</p>
               <p className="text-sm leading-6 text-[var(--muted-foreground)]">
-                This offer is available for 10 minutes and can be downloaded once by a device on your LAN. Keep this
-                sender window open until the receiving device imports it; closing this modal cancels the transfer.
+                This offer is available for 10 minutes and can be downloaded once by a device on your LAN. Keep this sender
+                window open; closing it cancels the transfer.
               </p>
             </div>
           </div>
@@ -311,6 +355,17 @@ export function SendToDeviceModal({ open, onClose, items, title = "Send to Devic
 
         {offer && (
           <div className="space-y-4">
+            <div className={`flex items-start gap-3 rounded-lg border p-3 text-sm ${senderStatusCopy.className}`}>
+              <SenderStatusIcon
+                className={shouldAnimateSenderStatusIcon ? "mt-0.5 shrink-0 animate-spin" : "mt-0.5 shrink-0"}
+                size="1rem"
+              />
+              <div className="space-y-1">
+                <p className="font-semibold">{senderStatusCopy.title}</p>
+                <p>{senderStatusCopy.body}</p>
+              </div>
+            </div>
+
             <div
               role={qrCodeError ? "alert" : !qrCodeUrl ? "status" : undefined}
               aria-live={qrCodeError ? "assertive" : !qrCodeUrl ? "polite" : undefined}

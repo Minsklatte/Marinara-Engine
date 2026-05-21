@@ -1,12 +1,13 @@
 // ──────────────────────────────────────────────
 // React Query: LAN transfer hooks
 // ──────────────────────────────────────────────
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   LanTransferCreateOfferRequest,
   LanTransferCreateOfferResponse,
   LanTransferImportFromOfferRequest,
   LanTransferImportSummary,
+  LanTransferOfferStatusResponse,
   LanTransferPreviewRequest,
   LanTransferPreviewResponse,
 } from "@marinara-engine/shared";
@@ -25,6 +26,19 @@ export function useCancelLanTransferOffer() {
   return useMutation({
     mutationFn: (offerId: string) =>
       api.delete<{ success: boolean }>(`/lan-transfer/offers/${encodeURIComponent(offerId)}`),
+  });
+}
+
+export function useLanTransferOfferStatus(offerId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ["lan-transfer", "offer-status", offerId],
+    queryFn: () =>
+      api.get<LanTransferOfferStatusResponse>(`/lan-transfer/offers/${encodeURIComponent(offerId!)}/status`),
+    enabled: enabled && !!offerId,
+    refetchInterval: (query) => {
+      const state = query.state.data?.state;
+      return state === "downloaded" || state === "missing" ? false : 1500;
+    },
   });
 }
 
