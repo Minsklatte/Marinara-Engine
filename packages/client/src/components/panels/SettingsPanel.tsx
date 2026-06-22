@@ -3323,7 +3323,6 @@ function ThemesSettings() {
   const updateTheme = useUpdateTheme();
   const deleteTheme = useDeleteTheme();
   const setActiveTheme = useSetActiveTheme();
-  const fileRef = useRef<HTMLInputElement>(null);
   const activeCustomTheme = syncedThemes.find((theme) => theme.isActive) ?? null;
   const isSavingTheme = createTheme.isPending || updateTheme.isPending || setActiveTheme.isPending;
 
@@ -3392,9 +3391,7 @@ function ThemesSettings() {
     }
   }, [createTheme, editingId, setActiveTheme, themeCss, themeName, updateTheme]);
 
-  const handleImportTheme = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleImportThemeFile = async (file: File) => {
     try {
       const text = await file.text();
       const latestThemes = await api.get<Theme[]>("/themes");
@@ -3465,7 +3462,6 @@ function ThemesSettings() {
       console.error("[ThemesSettings] Failed to import theme:", err);
       toast.error("Failed to import theme. Ensure it's a valid CSS or JSON file.");
     }
-    e.target.value = "";
   };
   // ── CSS Editor View ──
   if (editorOpen) {
@@ -3588,14 +3584,24 @@ function ThemesSettings() {
             >
               <Plus size="0.875rem" /> Create Theme
             </button>
-            <button
-              onClick={() => fileRef.current?.click()}
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)] transition-all hover:border-[var(--primary)]/40 hover:bg-[var(--secondary)]/50"
+            <label
+              htmlFor="theme-file-input"
+              className="cursor-pointer flex flex-1 items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)] transition-all hover:border-[var(--primary)]/40 hover:bg-[var(--secondary)]/50"
             >
               <Download size="0.875rem" /> Import File
-            </button>
+            </label>
+            <input
+              id="theme-file-input"
+              type="file"
+              accept=".css,.json"
+              className="sr-only"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleImportThemeFile(file);
+                e.target.value = "";
+              }}
+            />
           </div>
-          <input ref={fileRef} type="file" accept=".css,.json" className="hidden" onChange={handleImportTheme} />
 
           {/* Active theme: None option */}
           <div className="flex flex-col gap-1.5">
@@ -3882,8 +3888,6 @@ function ExtensionsSettings() {
   const createExtension = useCreateExtension();
   const updateExtension = useUpdateExtension();
   const deleteExtension = useDeleteExtension();
-  const fileRef = useRef<HTMLInputElement>(null);
-  const folderRef = useRef<HTMLInputElement>(null);
 
   const importExtensionEntries = async (
     entries: FolderPackageImportEntry[],
@@ -4033,31 +4037,31 @@ function ExtensionsSettings() {
         icon={<Puzzle size="0.875rem" />}
       >
         <div className="flex flex-col gap-3">
-          {/* Import button */}
-          <button
-            onClick={() => fileRef.current?.click()}
-            className="flex items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)] transition-all hover:border-[var(--primary)]/40 hover:bg-[var(--secondary)]/50"
+          {/* Import buttons */}
+          <label
+            htmlFor="extension-file-input"
+            className="cursor-pointer flex items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)] transition-all hover:border-[var(--primary)]/40 hover:bg-[var(--secondary)]/50"
           >
             <Download size="0.875rem" /> Import Extension File (.zip, .json, .css, or .js)
-          </button>
-          <button
-            onClick={() => folderRef.current?.click()}
-            className="flex items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)] transition-all hover:border-[var(--primary)]/40 hover:bg-[var(--secondary)]/50"
-          >
-            <FolderOpen size="0.875rem" /> Import Extension Folder
-          </button>
+          </label>
           <input
-            ref={fileRef}
+            id="extension-file-input"
             type="file"
-            accept=".zip,.json,.css,.js,application/zip,application/json"
-            className="hidden"
+            className="sr-only"
             onChange={handleImportExtension}
           />
+
+          <label
+            htmlFor="extension-folder-input"
+            className="cursor-pointer flex items-center justify-center gap-1.5 rounded-lg border-2 border-dashed border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)] transition-all hover:border-[var(--primary)]/40 hover:bg-[var(--secondary)]/50"
+          >
+            <FolderOpen size="0.875rem" /> Import Extension Folder
+          </label>
           <input
-            ref={folderRef}
+            id="extension-folder-input"
             type="file"
             multiple
-            className="hidden"
+            className="sr-only"
             onChange={handleImportExtensionFolder}
             // @ts-expect-error — webkitdirectory is a non-standard but widely-supported attribute
             webkitdirectory=""
